@@ -1,0 +1,15 @@
+server {
+	listen          443;
+	server_name     localhost;
+	access_log /srv/www/barbican/logs/access.log;
+	error_log /srv/www/barbican/logs/error.log;
+	ssl on;
+	ssl_certificate /etc/nginx/ssl_keys/server.crt;
+	ssl_certificate_key /etc/nginx/ssl_keys/server.key;
+
+	location / {
+		include         uwsgi_params;
+		uwsgi_pass      127.0.0.1:9311;
+		#uwsgi_read_timeout 300;
+	}
+}

@@ -1,0 +1,19 @@
+upstream backend {
+        ip_hash;
+        server docker_ip1:port;
+        server docker_ip2:port;
+}
+
+server {
+        listen  443;
+        server_name     load_balancer_ip;
+        access_log /srv/www/barbican/logs/access.log;
+        error_log /srv/www/barbican/logs/error.log;
+        ssl on;
+        ssl_certificate /etc/nginx/ssl_keys/server.crt;
+        ssl_certificate_key /etc/nginx/ssl_keys/server.key;
+        location / {
+                proxy_pass https://backend;
+                proxy_set_header X-SSL-CERT $ssl_client_cert;
+        }
+}

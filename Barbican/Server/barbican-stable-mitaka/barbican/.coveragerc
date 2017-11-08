@@ -1,0 +1,12 @@
+[run]
+branch = True
+omit = etc/*,setup.py,*egg*,.tox/*,barbican/tests/*,*barbican/openstack/*,
+       functionaltests/*,contrib/*,
+       barbican/model/migration/alembic_migrations/versions/*,
+       barbican/plugin/dogtag.py, barbican/plugin/symantec.py
+
+[report]
+ignore_errors = True
+exclude_lines =
+    pragma: no cover
+    @abc.abstractmethod

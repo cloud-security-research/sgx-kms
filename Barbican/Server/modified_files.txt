@@ -1,0 +1,20 @@
+Modified files list:
+barbican/api/app.py
+barbican/api/controllers/versions.py
+barbican/model/models.py
+barbican/model/repositories.py
+barbican/plugin/crypto/crypto.py
+barbican/plugin/resources.py
+barbican/plugin/store_crypto.py
+etc/barbican/barbican-api-paste.ini
+etc/barbican/barbican.conf
+etc/barbican/policy.json
+setup.cfg
+
+New files list:
+barbican/api/controllers/sgx.py
+barbican/model/migration/alembic_migrations/versions/c2cf30454188_add_session_key_in_projects.py
+barbican/model/migration/alembic_migrations/versions/ea6934da4b17_add_session_keys_policies_table.py
+barbican/plugin/crypto/sgx.h
+barbican/plugin/crypto/sgx.py
+barbican/plugin/crypto/sgx_crypto.py

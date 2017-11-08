@@ -1,0 +1,9 @@
+SGX Enabled Barbican Key Management System
+Copyright 2017 Intel(R) Corporation
+
+Portion of this software were developed at Intel Labs (https://www.intel.com/intellabs)
+This software is a research proof of concept to demonstrate the use of SGX for 
+protecting Openstack Barbican key management system. 
+
+This software not intended for production use.
+
