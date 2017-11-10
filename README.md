@@ -1,10 +1,8 @@
-# Project BarbiE
-
 SGX Enabled OpenStack Barbican Key Management System
 
 ##### This software is a research proof of concept and not intended for production use ######
 
-## Create BarbiE Installer
+## Create Barbican Enclave Installer
 
 Go to intel-sgx/source/SGX-Barbican/
 
@@ -16,7 +14,7 @@ Run
 
 It will create **BarbiE.bz2.run** binary
 
-## BarbiE Installation
+## Barbican Enclave Installation
 
 Execute "BarbiE.bz2.run" as root user on the machine where you want to setup Barbican with IP address as argument
 
@@ -151,7 +149,7 @@ sudo python sgx_client_wo_hw.py -ip [<IP>] -p <proj_id> -po [<policy>] -mre [<mr
 
 **E1** :- Enclave 1
 
-**E2** :- Enclave 2(BarbiE)
+**E2** :- Enclave 2(Barbican Enclave)
 
 **E1 is initiator of the Mutual Attestation with E2**
 
