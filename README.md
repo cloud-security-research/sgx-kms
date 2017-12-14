@@ -5,7 +5,8 @@ This software is a research proof of concept and not intended for production use
 ## Create Barbican Enclave Installer
 
 
-**IMPORTANT: First generate and copy a Intel(R) SGX enclave signing/private key into BarbiE/isv_enclave/isv_enclave_private.pem **
+**IMPORTANT: First generate and copy an Intel(R) SGX enclave signing/private key into BarbiE/isv_enclave/isv_enclave_private.pem
+
 Go to intel-sgx/source/SGX-Barbican/
 
 Run
