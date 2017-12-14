@@ -89,3 +89,31 @@ class MutualAttestationController(controllers.ACLMixin):
         if response is None:
             _quote_not_found()
         return response
+
+class ProvisionProjectPolicyController(controllers.ACLMixin):
+    """Root controller for the provisioning policy for a particular project"""
+
+    def __init__(self):
+        LOG.debug('=== Creating ProvisionPolicyController ===')
+
+    @pecan.expose(generic=True)
+    def index(self):
+        pecan.abort(405)  # HTTP 405 Method Not Allowed as default
+
+    @index.when(method='POST', template='json')
+    @controllers.handle_exceptions(u._('Provision Project Policy'))
+    @controllers.enforce_rbac('secrets:post')
+    @controllers.enforce_content_types(['application/json'])
+    def on_post(self, external_project_id):
+        data = api.load_body(pecan.request)
+        response = plugin.update_policy(data, external_project_id)
+        return response
+
+    @index.when(method='GET', template='json')
+    @controllers.handle_exceptions(u._('Policy retrieval'))
+    @controllers.enforce_rbac('secrets:get')
+    @controllers.enforce_content_types(['application/json'])
+    #@utils.allow_all_content_types
+    def on_get(self, external_project_id):
+        response = plugin.get_policy(external_project_id)
+        return response

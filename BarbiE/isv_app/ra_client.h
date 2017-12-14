@@ -47,7 +47,7 @@ int gen_msg0(ra_samp_msg0_request_header_t **pp_msg0_full, uint8_t *spid);
 *   @param[out] context - SGX RA session context handle
 *   @param[out] pp_msg1_full - RA MSG1 + header.  Warning API allocates memory, caller responsible to free resources
 */
-int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full);
+int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full, char *pub_key);
 /*!
 *   Generates RA MSG3 if RA MSG2 processed successfully
 *   @return sp_ra_msg_status_t (as int) - SP_OK on success, error code otherwise
@@ -66,7 +66,21 @@ int gen_msg3(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg1
 *   @param[out] sealed_secret - sealed secret from MSG4 payload
 *   @param sealed_len
 */
-int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len);
+int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len, uint8_t *sealed_secret2, size_t secret2_len);
+
+int ma_proc_ra(sgx_enclave_id_t enclave_id, ra_samp_msg3_response_header_t* s_msg4, sgx_ra_context_t s_p_ctxt, ra_samp_msg3_request_header_t *c_msg3, void **c_p_net_ctxt, ra_samp_msg3_response_header_t **pp_resp2, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *ias_crt, bool client_verify_ias, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1);
+
+int new_proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *dh_sk, size_t dk_sk_len, uint8_t *iv1, uint8_t *mac1);
+
+int get_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_kek, size_t sk_kek_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len);
+
+int secret_encrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_secret, size_t sk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *mk_secret, size_t plain_sk_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len);
+
+int secret_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *mk_secret, size_t mk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sk_secret, size_t plain_sk_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len);
+
+int get_mk_mr_list(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *sk_mr_list, size_t sk_mr_list_len, uint8_t *project_id, size_t project_id_len, uint8_t *mk_mr_list, size_t mk_mr_list_len, uint8_t *new_mk_mr_list, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv3, uint8_t *mac3, uint8_t *iv, uint8_t *mac);
+
+int get_sk_data(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *mk_data, size_t mk_data_len, uint8_t *project_id, size_t project_id_len, uint8_t *sk_data, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv, uint8_t *mac);
 /*!
 *   Processes RA MSG4 and provide project_id
 *   @return sp_ra_msg_status_t (as int) - SP_OK on success, error code otherwise

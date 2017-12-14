@@ -25,6 +25,16 @@ chmod +x install_barbican_with_nginx.sh
 ./install_barbican_with_nginx.sh $1
 cd $CWD
 
+file="/usr/local/lib/python2.7/dist-packages/ecdsa-*"
+if [ -f $file ] ; then
+   rm $file
+fi
+git clone https://github.com/warner/python-ecdsa.git
+cd $CWD/python-ecdsa
+python setup.py install
+
+cd $CWD
+
 cp $CWD/lib/BarbiE.signed.so /usr/local/lib/libBarbiE.signed.so
 cp $CWD/lib/libBarbiE_Server.so /usr/local/lib
 cp $CWD/lib/libBarbiE_Client.so /usr/local/lib

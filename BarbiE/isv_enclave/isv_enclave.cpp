@@ -34,19 +34,70 @@
 #include "isv_enclave_t.h"
 #include "sgx_tkey_exchange.h"
 #include "sgx_tcrypto.h"
+#include "remote_attestation_result.h"
 #include <stdarg.h>
-#include <stdio.h>      /* vsnprintf */
+#include <stdio.h>     /* vsnprintf */
+#include <stdlib.h>
 
 #include "sgx_tseal.h"
+#include "sgx_utils.h"
 #include "sgx_tcrypto.h"
+#include "sgx_quote.h"
+#include "sgx_key_exchange.h"
+#include "sgx_eid.h"
+
 #include <string.h>    // memcpy
 #include "seal.h"
 #define IV_SIZE 12
+#define SK_KEY_SIZE 16
+
+#ifndef SAMPLE_FEBITSIZE
+    #define SAMPLE_FEBITSIZE                    256
+#endif
+
+#define SAMPLE_ECP_KEY_SIZE                     (SAMPLE_FEBITSIZE/8)
 
 /* 
  * printf: 
  *   Invokes OCALL to display the enclave buffer to the terminal.
  */
+
+ typedef struct sample_ec_pub_t
+{
+    uint8_t gx[SAMPLE_ECP_KEY_SIZE];
+    uint8_t gy[SAMPLE_ECP_KEY_SIZE];
+} sample_ec_pub_t;
+
+typedef struct sample_ec_priv_t
+{
+    uint8_t r[SAMPLE_ECP_KEY_SIZE];
+} sample_ec_priv_t;
+
+typedef uint8_t sample_ec_key_128bit_t[16];
+
+typedef struct sample_ps_sec_prop_desc_t
+{
+    uint8_t  sample_ps_sec_prop_desc[256];
+} sample_ps_sec_prop_desc_t;
+
+typedef struct _sp_db_item_t
+{
+    sample_ec_pub_t             g_a;
+    sample_ec_pub_t             g_b;
+    sample_ec_key_128bit_t      vk_key;// Shared secret key for the REPORT_DATA
+    sample_ec_key_128bit_t      mk_key;// Shared secret key for generating MAC's
+    sample_ec_key_128bit_t      sk_key;// Shared secret key for encryption
+    sample_ec_key_128bit_t      smk_key;// Used only for SIGMA protocol
+    sample_ec_priv_t            b;
+    sample_ps_sec_prop_desc_t   ps_sec_prop;
+    // TODO, less than ideal but leveraging this structure as it has to be passed
+    sgx_enclave_id_t            enclave_id;
+    size_t                      secret_len;
+    uint8_t                     *secret;
+    size_t                      secret2_len;
+    uint8_t                     *secret2;
+}sp_db_item_t;
+
 void printf(const char *fmt, ...)
 {
 	char buf[BUFSIZ] = {'\0'};
@@ -235,7 +286,8 @@ sgx_status_t key_derivation(const sgx_ec256_dh_shared_t* shared_key,
 
 sgx_status_t enclave_init_ra(
     int b_pse,
-    sgx_ra_context_t *p_context)
+    sgx_ra_context_t *p_context,
+    sgx_ec256_public_t *pub_key)
 {
     // isv enclave call to trusted key exchange library.
     sgx_status_t ret;
@@ -249,9 +301,9 @@ sgx_status_t enclave_init_ra(
             return ret;
     }
 #ifdef SUPPLIED_KEY_DERIVATION
-    ret = sgx_ra_init_ex(&g_sp_pub_key, b_pse, key_derivation, p_context);
+    ret = sgx_ra_init_ex(pub_key, b_pse, key_derivation, p_context);
 #else
-    ret = sgx_ra_init(&g_sp_pub_key, b_pse, p_context);
+    ret = sgx_ra_init(pub_key, b_pse, p_context);
 #endif
     if(b_pse)
     {
@@ -390,6 +442,7 @@ sgx_status_t client_put_secret_data(
                                             (p_gcm_mac));
         if(SGX_SUCCESS != ret)
         {
+            printf("\nclient_put_secret_data failed\n");
             break;
         }
         
@@ -452,6 +505,26 @@ sgx_status_t ecall_get_ra_dh_key(
     return ret;
 }
 
+sgx_status_t ecall_get_mr_enclave(
+    sgx_ra_context_t context,
+    uint8_t *mr_enclave, size_t mr_e_len)
+{
+    sgx_status_t ret = SGX_SUCCESS;
+    sgx_report_t *report = (sgx_report_t *) malloc(sizeof(sgx_report_t));
+
+    ret = sgx_create_report(NULL, NULL, report);
+    if(SGX_SUCCESS != ret)
+    {
+        printf("Error retrieving report data for extracting mr enclave");
+    }
+    else
+    {
+        memcpy(mr_enclave, report->body.mr_enclave.m, 32);
+    }
+    free(report);
+    return ret;
+}
+
 void server_put_secret_data(uint8_t *sealed_sk, size_t sealed_len, uint8_t *plain_ra_key, size_t plain_ra_key_len, uint8_t *ra_key_enc_sk, uint8_t *iv, uint8_t *mac)
 {
     if (!sealed_sk || !plain_ra_key || !ra_key_enc_sk || !iv || !mac) return;
@@ -462,7 +535,157 @@ void server_put_secret_data(uint8_t *sealed_sk, size_t sealed_len, uint8_t *plai
             tmp_key, sealed_len - sizeof(sgx_sealed_data_t), ra_key_enc_sk, iv, IV_SIZE, NULL, 0, reinterpret_cast<uint8_t (*)[16]>(mac));
 	if(SGX_SUCCESS != status)
 	{
-		printf("error encrypting plain text\n");
+		printf("Error encrypting plain text\n");
 	}
     memset_s(&tmp_key, sizeof(tmp_key), 0, sizeof(tmp_key));
+}
+
+bool is_trusted_enclave(uint8_t *mr_list, size_t mr_list_len,  uint8_t *client_mr_e)
+{
+
+    if(client_mr_e == NULL)
+    {
+        return NULL;
+    }
+
+    int total_mr_e =  mr_list_len/32;
+    int n = 0;
+    for(int i =0; i < total_mr_e; i++)
+    {
+        if(memcmp(mr_list + n, client_mr_e, 32) == 0)
+        {
+            return true;
+        }
+        n = n + 32;
+    }
+    return false;
+}
+
+uint8_t *ecall_sp_get_mr_e(sgx_quote_t *p_quote)
+{
+    sgx_status_t ret = SGX_SUCCESS;
+    if(!p_quote)
+    {
+        return NULL;
+    }
+    return p_quote->report_body.mr_enclave.m;
+}
+
+uint8_t *ecall_sp_get_mr_s(sgx_quote_t *p_quote)
+{
+    sgx_status_t ret = SGX_SUCCESS;
+    if(!p_quote)
+    {
+        return NULL;
+    }
+    return p_quote->report_body.mr_signer.m;
+}
+
+sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg4_body_len, sgx_ra_context_t s_p_ctxt, sgx_quote_t *c_msg3_p_quote, size_t c_msg3_p_quote_len, void **c_p_net_ctxt, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1, sample_ra_att_result_msg_t *c_msg4_body, size_t c_msg4_body_len, uint8_t *project_id, size_t project_id_len)
+{
+    sgx_status_t ret = SGX_SUCCESS;
+    sp_db_item_t *sp_db = NULL;
+    size_t sealed_sk_len = ecall_get_sealed_data_len(0, 16);
+    uint8_t *sealed_sk = (uint8_t *) malloc(sealed_sk_len);
+    uint8_t *sealed_nonse = (uint8_t *) malloc(sealed_sk_len);
+    uint8_t *mr_to_verify = NULL;
+    uint8_t *r_client_mr_e = s_msg4_body->data1.payload;
+    uint8_t *r_server_mr_e = s_msg4_body->data2.payload;
+    uint8_t *r_owner_mr_e = s_msg4_body->data3.payload;
+    //client and server mr enclave extracted here
+
+    uint8_t *client_mr_e = ecall_sp_get_mr_e(c_msg3_p_quote);
+    uint8_t *client_mr_s = ecall_sp_get_mr_s(c_msg3_p_quote);
+    uint8_t *server_mr_e = (uint8_t *) malloc(32);
+    ecall_get_mr_enclave(s_p_ctxt, server_mr_e, 32);
+
+    //verifying policy for client
+    if(policy == 2)
+    {
+       //going to verify mr signer of client
+       mr_to_verify = client_mr_s;
+    }
+    else if (policy == 1 || policy == 3)
+    {
+       //going to verify mr enclave of client
+       mr_to_verify = client_mr_e;
+    }
+    if(memcmp(client_mr_e, r_client_mr_e, 32) == 0 && memcmp(server_mr_e, r_server_mr_e, 32) ==0)
+    {
+        if(memcmp(r_client_mr_e, r_owner_mr_e, 32) == 0 && strlen((char *)sealed_mk) == 0 && strlen((char *)mk_sk) == 0)
+        {
+            printf("\nGenerate new keys\n");
+            ret = ecall_generate_key(SK_KEY_SIZE, sealed_sk, sealed_sk_len);
+            sealed_mk_len = sealed_sk_len;
+            uint8_t *tmp_sealed_mk = NULL;
+            tmp_sealed_mk = (uint8_t *) malloc(sealed_mk_len);
+            ret = ecall_generate_key(SK_KEY_SIZE, tmp_sealed_mk, sealed_mk_len);
+            memcpy(sealed_mk, tmp_sealed_mk, sealed_mk_len);
+            memset_s(tmp_sealed_mk, sealed_mk_len, 0, sealed_mk_len);
+            free(tmp_sealed_mk);
+            tmp_sealed_mk = NULL;
+            if(ret != SGX_SUCCESS)
+            {
+                 printf("\nError in generating sealed master key");
+            }
+
+            ecall_transport_secret(sealed_mk, sealed_mk_len, sealed_sk, sealed_sk_len, mk_sk, SK_KEY_SIZE, iv, mac, project_id, project_id_len);
+        }
+        else
+        {
+            ecall_provision_kek(sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_sk_len, project_id, project_id_len);
+            printf( "\nUse existing keys");
+            uint8_t *mr_list = (uint8_t *)malloc(attribute_len);
+            ecall_decrypt(sealed_mk, sealed_mk_len, mr_list, attribute_len, attribute, iv1, mac1, sealed_sk, sealed_sk_len);
+            //compare r_owner_mr_e with first entry in mr_list
+            if(memcmp(mr_list, r_owner_mr_e, 32) ==0){
+                if(!is_trusted_enclave(mr_list, attribute_len, mr_to_verify))
+                {
+                    printf("\n******************* Untrusted Enclave **********\n");
+                    free(mr_list);
+                    return SGX_ERROR_UNEXPECTED;
+                }
+            }
+            else
+            {
+                printf("\n******************* Owner in Mr List provided does not match with the given owner **********\n");
+                free(mr_list);
+                return SGX_ERROR_UNEXPECTED;
+            }
+        }
+    }
+    else
+    {
+        printf("\nEnclave Identity verification failed\n");
+        return SGX_ERROR_UNEXPECTED;
+    }
+    ret = client_put_secret_data(s_p_ctxt,
+                                 s_msg4_body->secret.payload,
+                                 s_msg4_body->secret.payload_size,
+                                 s_msg4_body->secret.payload_tag,
+                                 sealed_nonse, sealed_sk_len);
+
+    if(SGX_SUCCESS != ret) {
+        printf("\nError in retrieving sealed nonse from msg4\n");
+    }
+
+    sp_db = (sp_db_item_t *)*c_p_net_ctxt;
+    uint8_t aes_gcm_iv[12] = {0};
+
+    c_msg4_body->secret.payload_size = ecall_get_encrypt_txt_len(sealed_nonse, sealed_sk_len);
+      server_put_secret_data(sealed_nonse, sealed_sk_len, (uint8_t *) &sp_db->sk_key, sizeof(sp_db->sk_key),
+        (uint8_t *) c_msg4_body->secret.payload, &aes_gcm_iv[0], (uint8_t *) &c_msg4_body->secret.payload_tag); 
+
+    c_msg4_body->data1.payload_size = ecall_get_encrypt_txt_len(sealed_sk, sealed_sk_len);
+    server_put_secret_data(sealed_sk, sealed_sk_len, (uint8_t *) &sp_db->sk_key, sizeof(sp_db->sk_key),
+    (uint8_t *) c_msg4_body->data1.payload, &aes_gcm_iv[0], (uint8_t *) &c_msg4_body->data1.payload_tag);
+
+
+    free(sealed_sk);
+	sealed_sk = NULL;
+    free(sealed_nonse);
+	sealed_nonse = NULL;
+    free(server_mr_e);
+	server_mr_e = NULL;
+    return ret;
 }

@@ -25,9 +25,9 @@ cp -r $rabbit_mq_file $target
 cp -r $BarbiE/* $target/lib
 cp -r $Client/sgx.py $target/test_scripts/
 cp -r $Client/sgx.h $target/test_scripts/
-cp -r $Client/legacy_client.py $target/test_scripts/
 cp -r $Client/sgx_client_wo_hw.py $target/test_scripts/
 cp -r $Client/sgx_client_with_hw.py $target/test_scripts/
+cp -r $Client/project_policy_mgmt.py $target/test_scripts/
 cp -r $Client/__init__.py $target/test_scripts/
 cp -r $Client/rabbit_mq_scripts/ $target/test_scripts/
 cp -r $install_script $target

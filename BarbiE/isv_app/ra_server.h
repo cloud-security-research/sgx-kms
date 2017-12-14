@@ -48,7 +48,7 @@ int proc_msg0(ra_samp_msg0_request_header_t *p_msg_full, void **pp_ra_ctx, uint8
 *   @param[in/out] pp_ra_ctx - RA session context
 *   @param[out] pp_msg_resp_full - RA MSG2 + header.  Warning API allocates memory, callre responsible to free resources
 */
-int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full);
+int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full, char* priv_key);
 /*!
 *   Processes RA MSG3 and if successful generates RA MSG4
 *   @return sp_ra_msg_status_t (as int) - SP_OK on success, error code otherwise
@@ -57,7 +57,7 @@ int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_sa
 *   @param[out] pp_msg_resp_full - RA MSG4 + header.  Warning API allocates memory, callre responsible to free resources
 *   @param[in] uint8_t* project_id 
 */
-int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, uint8_t *project_id, uint8_t *ias_crt, bool client_verify_ias);
+int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, ra_samp_msg3_request_header_t *c_p_msg_full, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *ias_crt, bool client_verify_ias);
 /*!
 *   Recovers SK from RA_DH enc_sk
 *   @return sp_ra_msg_status_t (as int) - SP_OK on success, error code otherwise

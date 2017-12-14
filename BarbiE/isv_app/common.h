@@ -69,6 +69,24 @@ size_t get_add_mac_len(sgx_enclave_id_t enclave_id, uint8_t* sealed_buf_ptr, uin
 *   @param sealed_len - size of sealed_len
 */
 size_t get_encrypted_len(sgx_enclave_id_t enclave_id, uint8_t* sealed_buf_ptr, uint32_t sealed_len);
+
+/*!
+*   Securely recover KEK from SK encrypted KEK and returns sealed form
+*   @return sgx_status_t - SGX_SUCCESS on success, error code otherwise
+*   @param enclave_id - target enclave handle
+*   @param[in] sealed_sk- sealed SK
+*   @param sealed_sk_len
+*   @param[in] sk_enc_kek - KEK encrypted with SK
+*   @param sk_enc_kek_len
+*   @param[in] iv
+*   @param[in] mac
+*   @param[in] sealed_kek -sealed KEK
+*   @param sealed_kek_len
+*/
+int crypto_provision_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_sk, size_t sealed_sk_len, uint8_t *sk_enc_kek, size_t sk_enc_kek_len, uint8_t *iv, uint8_t *mac, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len);
+
+unsigned char *makeByteArray(char *str);
+
 #if defined(__cplusplus)
 }
 #endif

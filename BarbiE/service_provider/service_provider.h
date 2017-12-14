@@ -130,23 +130,23 @@ int sp_ra_proc_msg0_req(const sample_ra_msg0_t *p_msg0,
 
 int sp_ra_proc_msg1_req(void **pp_ra_ctx, const sample_ra_msg1_t *p_msg1,
 						uint32_t msg1_size,
-						ra_samp_response_header_t **pp_msg2);
+						ra_samp_response_header_t **pp_msg2,
+						sgx_ec256_private_t* priv_key);
 
 #define SK_KEY_SIZE 16
 extern size_t get_sealed_data_len(sgx_enclave_id_t enclave_id, size_t add, size_t plain_len);
 extern size_t get_encrypted_len(sgx_enclave_id_t enclave_id, uint8_t* sealed_buf_ptr, uint32_t sealed_len);
 extern sgx_status_t server_put_secret_data(sgx_enclave_id_t eid, uint8_t* sealed_sk, size_t sealed_len, uint8_t* plain_ra_key, size_t plain_ra_key_len, uint8_t* ra_key_enc_sk, uint8_t* iv, uint8_t* mac);
 
-int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
-                        uint32_t msg3_size,
-                        ra_samp_response_header_t **pp_att_result_msg, uint8_t *project_id, uint8_t *ias_crt, bool client_verify_ias);
+int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3, uint32_t msg3_size, ra_samp_response_header_t **pp_att_result_msg,
+                        sgx_ra_msg3_t *c_p_msg3, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *ias_crt, bool client_verify_ias, sample_ra_att_result_msg_t *r_c_msg4_body);
 int sp_get_sk(void **pp_ra_ctx, uint8_t *plain_sk, size_t sk_len, uint8_t *enc_sk, uint8_t *sk_iv, uint8_t *sk_mac);
 
 int sp_ra_free_msg2(
     sgx_ra_msg2_t *p_msg2);
 
 int set_enclave(void **pp_ra_ctx, sgx_enclave_id_t enclave_id);
-int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len);
+int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len, uint8_t *secret2, size_t secret2_len);
 int ias_verify_attestation_evidence(
     uint8_t *p_isv_quote,
     uint8_t* pse_manifest,
@@ -165,6 +165,8 @@ typedef int(*sample_verify_attestation_evidence)(uint8_t *p_isv_quote,
 
 uint8_t *sp_get_mr_e(sgx_ra_msg3_t *p_msg3);
 uint8_t *sp_get_mr_s(sgx_ra_msg3_t *p_msg3);
+
+int get_report_sha256(ra_samp_msg3_request_header_t *p_msg3, uint8_t *sha256);
 
 typedef struct sample_extended_epid_group
 {

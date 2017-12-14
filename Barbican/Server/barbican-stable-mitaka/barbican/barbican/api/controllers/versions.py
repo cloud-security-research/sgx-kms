@@ -122,6 +122,7 @@ class V2Controller(V1Controller):
         self.attestation = sgx.AttestationController()
         self.mutual_attestation = sgx.MutualAttestationController()
         self.kek = sgx.ProvisionKEKController()
+        self.policy = sgx.ProvisionProjectPolicyController()
 
 
 AVAILABLE_VERSIONS = {

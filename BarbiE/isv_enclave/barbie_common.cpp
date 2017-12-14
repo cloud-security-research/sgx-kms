@@ -42,15 +42,20 @@
 #include <string.h>    // memcpy
 #include "seal.h"
 #define IV_SIZE 12
+#define SK_KEY_LEN 16
 
 sgx_status_t ecall_generate_key(size_t key_len, uint8_t *sealed_key, size_t sealed_key_len)
 {
     if (!sealed_key || sealed_key_len < sgx_calc_sealed_data_size(0, key_len)) return SGX_ERROR_INVALID_PARAMETER;
     sgx_status_t status = SGX_SUCCESS;
-	uint8_t* tmp = (uint8_t *) malloc(key_len);
+    uint8_t* tmp = (uint8_t *) malloc(key_len);
     status = sgx_read_rand(tmp, key_len);
     if (status != SGX_SUCCESS) return status;
     status = (sgx_status_t) seal(sealed_key, sealed_key_len, tmp, key_len);
+    if (SGX_SUCCESS != status)
+    {
+        printf("\nError in sealing key. Error code 0x%x\n", status);
+    }
     memset_s(tmp, key_len, 0, key_len);
     free(tmp);
     tmp = NULL;
@@ -73,34 +78,87 @@ int ecall_sealed_cmp(uint8_t *sealed_key1, size_t sealed_len1, uint8_t *sealed_k
 
 sgx_status_t ecall_encrypt(uint8_t *sealed_key, size_t sealed_key_len, uint8_t *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac, uint8_t *project_id, size_t project_id_len)
 {
+    sgx_status_t status = SGX_SUCCESS;
+    uint8_t *aad;
+    size_t aad_len = 0;
+    size_t seal_project_id_len = ecall_get_sealed_data_len(0, SK_KEY_LEN);
+    if(seal_project_id_len == project_id_len && project_id_len != 0)
+    {
+        aad = (uint8_t *) malloc(SK_KEY_LEN);
+        status = (sgx_status_t) unseal(project_id, project_id_len, aad, SK_KEY_LEN);
+        aad_len = SK_KEY_LEN;
+        if (status != SGX_SUCCESS)
+        {
+            printf("\nError in Unseal. Error code : 0x%x\n", status);
+            return status;
+        }
+    }
+    else
+    {
+        if(project_id_len == 0)
+        {
+            aad = NULL;
+            aad_len = 0;
+        }
+        aad = (uint8_t *) malloc(project_id_len);
+        memcpy(aad, project_id, project_id_len);
+        aad_len = project_id_len;
+    }
+
     if (!sealed_key || !plain_text || !cypher_text || !iv || !mac) return SGX_ERROR_INVALID_PARAMETER;
-	sgx_status_t status = SGX_SUCCESS;
 	sgx_key_128bit_t enc_key;
 	status = (sgx_status_t) unseal(sealed_key, sealed_key_len, (uint8_t *) &enc_key, sizeof(sgx_key_128bit_t));
     if (status != SGX_SUCCESS) return status;
 	status = sgx_rijndael128GCM_encrypt(&enc_key,
-            plain_text, plain_text_len, cypher_text, iv, IV_SIZE, project_id, project_id_len, reinterpret_cast<uint8_t (*)[16]>(mac));
+            plain_text, plain_text_len, cypher_text, iv, IV_SIZE, aad, aad_len, reinterpret_cast<uint8_t (*)[16]>(mac));
 	if(SGX_SUCCESS != status)
 	{
 		printf("error encrypting plain text\n");
 	}
     memset_s(&enc_key, sizeof(enc_key), 0, sizeof(enc_key));
+    free(aad);
     return status;
 }
 
 sgx_status_t ecall_decrypt(uint8_t *sealed_key, size_t sealed_key_len, uint8_t *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac, uint8_t *project_id, size_t project_id_len)
 {
+    sgx_status_t status = SGX_SUCCESS;
+    uint8_t *aad;
+    size_t aad_len = 0;
+    size_t seal_project_id_len = ecall_get_sealed_data_len(0, SK_KEY_LEN);
+    if(seal_project_id_len == project_id_len && project_id_len != 0)
+    {
+        aad = (uint8_t *) malloc(SK_KEY_LEN);
+        status = (sgx_status_t) unseal(project_id, project_id_len, aad, SK_KEY_LEN);
+        aad_len = SK_KEY_LEN;
+        if (status != SGX_SUCCESS)
+        {
+            printf("\nError in Unseal. Error code : 0x%x\n", status);
+            return status;
+        }
+    }
+    else
+    {
+        if(project_id_len == 0)
+        {
+            aad = NULL;
+            aad_len = 0;
+        }
+        aad = (uint8_t *) malloc(project_id_len);
+        memcpy(aad, project_id, project_id_len);
+        aad_len = project_id_len;
+    }
     if (!sealed_key || !plain_text || !cypher_text || !iv || !mac) return SGX_ERROR_INVALID_PARAMETER;
-	sgx_status_t status = SGX_SUCCESS;
 	sgx_key_128bit_t dec_key;
 	status = (sgx_status_t) unseal(sealed_key, sealed_key_len, (uint8_t *) &dec_key, sizeof(sgx_key_128bit_t));
     if (status != SGX_SUCCESS) return status;
-	status = sgx_rijndael128GCM_decrypt(&dec_key, cypher_text, plain_text_len, plain_text, iv, IV_SIZE, project_id, project_id_len, reinterpret_cast<uint8_t (*)[16]>(mac));
+	status = sgx_rijndael128GCM_decrypt(&dec_key, cypher_text, plain_text_len, plain_text, iv, IV_SIZE, aad, aad_len, reinterpret_cast<uint8_t (*)[16]>(mac));
 	if(SGX_SUCCESS != status)
 	{
-		printf("\nError decrypting cypher text\n");
+		printf("\nError decrypting cypher text. Error code : 0x%x\n", status);
 	}
     memset_s(&dec_key, sizeof(dec_key), 0, sizeof(dec_key));
+    free(aad);
     return status;
 }
 
@@ -111,7 +169,11 @@ sgx_status_t ecall_transport_secret(uint8_t *sealed_key, size_t sealed_key_len, 
     size_t plain_secret_len = sgx_get_encrypt_txt_len((sgx_sealed_data_t*) sealed_secret);
     uint8_t *plain_secret = (uint8_t *) malloc(plain_secret_len);
     status = (sgx_status_t) unseal(sealed_secret, sealed_secret_len, plain_secret, plain_secret_len);
-    if (status != SGX_SUCCESS) return status;
+    if (status != SGX_SUCCESS)
+    {
+        printf("\nError in Unseal. Error code : 0x%x\n", status);
+        return status;
+    }
     status = (sgx_status_t) ecall_encrypt(sealed_key, sealed_key_len, plain_secret, plain_secret_len, enc_secret, secret_iv, secret_mac, project_id, project_id_len);
     memset_s(plain_secret, plain_secret_len, 0, plain_secret_len);
     free(plain_secret);

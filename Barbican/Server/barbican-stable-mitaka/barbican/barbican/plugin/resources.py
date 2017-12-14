@@ -417,3 +417,15 @@ def do_provision_kek(data, external_project_id):
     store_plugin = plugin_manager.get_plugin_store(None)
     return store_plugin.do_provision_kek(data, external_project_id)
 
+def update_policy(data, external_project_id):
+    plugin_manager = secret_store.get_manager()
+    #This parameter can be None Just for custom sgx plugin
+    store_plugin = plugin_manager.get_plugin_store(None)
+    return store_plugin.update_policy(data, external_project_id)
+
+def get_policy(external_project_id):
+    plugin_manager = secret_store.get_manager()
+    #This parameter can be None Just for custom sgx plugin
+    store_plugin = plugin_manager.get_plugin_store(None)
+    return store_plugin.get_policy(external_project_id)
+

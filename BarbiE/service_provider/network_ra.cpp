@@ -49,9 +49,9 @@
 
 // @return int
 
-int ra_network_send_receive(const char *server_url, void **pp_ra_ctx,
-    const ra_samp_request_header_t *p_req,
-    ra_samp_response_header_t **p_resp, uint8_t *project_id, uint8_t *spid, uint8_t *ias_crt, bool client_verify_ias)
+int ra_network_send_receive(const char *server_url, void **pp_ra_ctx, const ra_samp_request_header_t *p_req,
+    ra_samp_response_header_t **p_resp, const ra_samp_request_header_t *c_p_req, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *spid,
+    uint8_t *ias_crt, bool client_verify_ias, sgx_ec256_private_t* priv_key)
 {
     int ret = 0;
     ra_samp_response_header_t* p_resp_msg;
@@ -80,7 +80,7 @@ int ra_network_send_receive(const char *server_url, void **pp_ra_ctx,
         ret = sp_ra_proc_msg1_req(pp_ra_ctx, (const sample_ra_msg1_t*)((uint8_t*)p_req
             + sizeof(ra_samp_request_header_t)),
             p_req->size,
-            &p_resp_msg);
+            &p_resp_msg, priv_key);
         if(0 != ret)
         {
             fprintf(stderr, "\nError, call sp_ra_proc_msg1_req fail [%s].",
@@ -93,10 +93,16 @@ int ra_network_send_receive(const char *server_url, void **pp_ra_ctx,
         break;
 
     case TYPE_RA_MSG3:
+        sgx_ra_msg3_t *new_c_p_req;
+        new_c_p_req = NULL;
+        if(c_p_req != NULL)
+        {
+            new_c_p_req = (sgx_ra_msg3_t*)((uint8_t*)c_p_req + sizeof(ra_samp_request_header_t));
+        }
         ret = sp_ra_proc_msg3_req(pp_ra_ctx, (sgx_ra_msg3_t*)((uint8_t*)p_req +
             sizeof(ra_samp_request_header_t)),
             p_req->size,
-            &p_resp_msg, project_id, ias_crt, client_verify_ias);
+            &p_resp_msg, new_c_p_req, project_id, owner_mr_e, ias_crt, client_verify_ias, NULL);
         if(0 != ret)
         {
             fprintf(stderr, "\nError, call sp_ra_proc_msg3_req fail [%s].",

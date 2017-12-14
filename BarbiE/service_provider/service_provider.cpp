@@ -37,6 +37,7 @@
 
 #include "ecp.h"
 
+#include <openssl/sha.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
@@ -102,6 +103,8 @@ typedef struct _sp_db_item_t
     sgx_enclave_id_t            enclave_id;
     size_t                      secret_len;
     uint8_t                     *secret;
+    size_t                      secret2_len;
+    uint8_t                     *secret2;
 }sp_db_item_t;
 
 static const sample_extended_epid_group* g_sp_extended_epid_group_id= NULL;
@@ -119,12 +122,13 @@ int set_enclave(void **pp_ra_ctx, sgx_enclave_id_t enclave_id)
     return 0;
 }
 
-int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len)
+int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len, uint8_t *secret2, size_t secret2_len)
 {
-    //check input
     sp_db_item_t *sp = (sp_db_item_t *)*pp_ra_ctx;
     sp->secret = secret;
     sp->secret_len = secret_len;
+    sp->secret2 = secret2;
+    sp->secret2_len = secret2_len;
     return 0;
 }
 // Verify message 0 then configure extended epid group.
@@ -184,7 +188,8 @@ int sp_ra_proc_msg0_req(const sample_ra_msg0_t *p_msg0,
 // Verify message 1 then generate and return message 2 to isv.
 int sp_ra_proc_msg1_req(void **pp_ra_ctx, const sample_ra_msg1_t *p_msg1,
 						uint32_t msg1_size,
-						ra_samp_response_header_t **pp_msg2)
+						ra_samp_response_header_t **pp_msg2,
+						sgx_ec256_private_t* in_priv_key)
 {
     int ret = 0;
     sp_db_item_t *sp_db = NULL;
@@ -410,7 +415,7 @@ int sp_ra_proc_msg1_req(void **pp_ra_ctx, const sample_ra_msg1_t *p_msg1,
 
         // Sign gb_ga
         sample_ret = sample_ecdsa_sign((uint8_t *)&gb_ga, sizeof(gb_ga),
-                        (sample_ec256_private_t *)&g_sp_priv_key,
+                        (sample_ec256_private_t *)in_priv_key,
                         (sample_ec256_signature_t *)&p_msg2->sign_gb_ga,
                         ecc_state);
         if(SAMPLE_SUCCESS != sample_ret)
@@ -489,11 +494,40 @@ uint8_t *sp_get_mr_s(sgx_ra_msg3_t *p_msg3)
     return p_quote->report_body.mr_signer.m;
 }
 
-// Process remote attestation message 3
-int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
-                        uint32_t msg3_size,
-                        ra_samp_response_header_t **pp_att_result_msg, uint8_t *project_id, uint8_t *ias_crt, bool client_verify_ias)
+void get_sha256(char *string, char *outputBuffer)
 {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha256;
+    SHA256_Init(&sha256);
+    SHA256_Update(&sha256, string, strlen(string));
+    SHA256_Final(hash, &sha256);
+    int i = 0;
+    for(i = 0; i < SHA256_DIGEST_LENGTH; i++)
+    {
+        sprintf(outputBuffer + (i), "%x", hash[i]);
+    }
+}
+
+int get_report_sha256(ra_samp_msg3_request_header_t *p_msg3, uint8_t *sha256)
+{
+    char buffer[32];
+
+    sgx_ra_msg3_t *pp_msg3 = NULL;
+    pp_msg3 = (sgx_ra_msg3_t *)p_msg3;
+
+    get_sha256((char *)pp_msg3->quote, buffer);
+
+    memcpy(sha256, (uint8_t *)buffer, 32);
+    return 0;
+}
+
+// Process remote attestation message 3
+int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3, uint32_t msg3_size, ra_samp_response_header_t **pp_att_result_msg, sgx_ra_msg3_t *c_p_msg3, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *ias_crt, bool client_verify_ias, sample_ra_att_result_msg_t *r_c_msg4_body)
+{
+
+    uint8_t *sha2_client, *sha2_server;
+    sha2_client = NULL;
+    sha2_server = NULL;
     int ret = 0;
     int ret1 = 0;
     sp_db_item_t *sp_db = NULL;
@@ -653,7 +687,7 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
         }
         FILE* OUTPUT = stdout;
         fprintf(OUTPUT, "\n\n\tAtestation Report:");
-        fprintf(OUTPUT, "\n\tid: 0x%0x.", attestation_report.id);
+        fprintf(OUTPUT, "\n\tid: %s.", attestation_report.id);
         fprintf(OUTPUT, "\n\tstatus: %d.", attestation_report.status);
         fprintf(OUTPUT, "\n\trevocation_reason: %u.",
                 attestation_report.revocation_reason);
@@ -673,15 +707,17 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
         uint32_t att_result_msg_size = sizeof(sample_ra_att_result_msg_t);
         p_att_result_msg_full =
             (ra_samp_response_header_t*)malloc(att_result_msg_size
-            + sizeof(ra_samp_response_header_t) + sp_db->secret_len + project_id_len);
+            + sizeof(ra_samp_response_header_t) + project_id_len);
         if(!p_att_result_msg_full)
         {
             fprintf(stderr, "\nError, out of memory in [%s].", __FUNCTION__);
             ret = SP_INTERNAL_ERROR;
             break;
         }
+
         memset(p_att_result_msg_full, 0, att_result_msg_size
-               + sizeof(ra_samp_response_header_t) + sp_db->secret_len + project_id_len);
+                + sizeof(ra_samp_response_header_t) + project_id_len);
+
         p_att_result_msg_full->type = TYPE_RA_ATT_RESULT;
         p_att_result_msg_full->size = att_result_msg_size;
         if(IAS_QUOTE_OK != attestation_report.status)
@@ -694,7 +730,19 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
         }
 
         p_att_result_msg =
-            (sample_ra_att_result_msg_t *)p_att_result_msg_full->body;
+                (sample_ra_att_result_msg_t *)p_att_result_msg_full->body;
+
+        if(r_c_msg4_body != NULL)
+        {
+            p_att_result_msg->secret.payload_size = r_c_msg4_body->secret.payload_size;
+            memcpy(p_att_result_msg->secret.payload_tag, r_c_msg4_body->secret.payload_tag, 16);
+            memcpy(p_att_result_msg->secret.payload, r_c_msg4_body->secret.payload, 32);
+
+            p_att_result_msg->data1.payload_size = r_c_msg4_body->data1.payload_size;
+            memcpy(p_att_result_msg->data1.payload_tag, r_c_msg4_body->data1.payload_tag, 16);
+            memcpy(p_att_result_msg->data1.payload, r_c_msg4_body->data1.payload, 32);
+
+        }
 
         // In the product implementation of IAS, the HTTP response header itself will have
         // an RK based signature that the service provider needs to check here.
@@ -773,7 +821,7 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
                             0,
                             &p_att_result_msg->project_id.payload_tag);
              if(!ret1)
-	        fprintf(stdout,"project id encrypted successfully and added to body");
+	        fprintf(stdout,"\nProject id encrypted successfully and added to body");
         }
 
         // Generate mac based on the mk key.
@@ -794,9 +842,7 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
            (IAS_PSE_OK == attestation_report.pse_status) &&
            (isv_policy_passed == true))
         {
-            if (sp_db->secret_len == 0) {
-                p_att_result_msg->secret.payload_size = sp_db->secret_len;
-            } else if (sp_db->secret_len == SK_KEY_SIZE && sp_db->secret) {
+            if (sp_db->secret_len == SK_KEY_SIZE && sp_db->secret) {
                 p_att_result_msg->secret.payload_size = sp_db->secret_len;
                 ret = sample_rijndael128GCM_encrypt(&sp_db->sk_key,
                             sp_db->secret,
@@ -807,15 +853,27 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
                             NULL,
                             0,
                             &p_att_result_msg->secret.payload_tag);
-            } else if ((sp_db->secret_len == get_sealed_data_len(sp_db->enclave_id, 0, SK_KEY_SIZE)) && sp_db->secret) {
+            }else if ((sp_db->secret_len == get_sealed_data_len(sp_db->enclave_id, 0, SK_KEY_SIZE)) && sp_db->secret!=NULL) {
                 p_att_result_msg->secret.payload_size = get_encrypted_len(sp_db->enclave_id, sp_db->secret, sp_db->secret_len);
                 ret = server_put_secret_data(sp_db->enclave_id, sp_db->secret, sp_db->secret_len, (uint8_t *) &sp_db->sk_key, sizeof(sp_db->sk_key),
                     (uint8_t *) p_att_result_msg->secret.payload, &aes_gcm_iv[0], (uint8_t *) &p_att_result_msg->secret.payload_tag);
-            } else {
-                fprintf(stderr, "\nUnsupported secret length in [%s].", __FUNCTION__);
-                ret = -1;
-            }
+			}
+
         }
+        if(c_p_msg3!=NULL)
+        {
+            sha2_client = sp_get_mr_e(c_p_msg3);
+            sha2_server = sp_get_mr_e(p_msg3);
+        }
+        if(sha2_client!=NULL && sha2_server!=NULL && owner_mr_e!=NULL) {
+            p_att_result_msg->data1.payload_size = 32;
+            memcpy(p_att_result_msg->data1.payload, sha2_client, 32);
+            p_att_result_msg->data2.payload_size = 32;
+            memcpy(p_att_result_msg->data2.payload, sha2_server, 32);
+            p_att_result_msg->data3.payload_size = 32;
+            memcpy(p_att_result_msg->data3.payload, owner_mr_e, 32);
+        }
+
     }while(0);
 
     if(ret)
@@ -827,10 +885,9 @@ int sp_ra_proc_msg3_req(void **pp_ra_ctx, sgx_ra_msg3_t *p_msg3,
     {
         // Freed by the network simulator in ra_free_network_response_buffer
         *pp_att_result_msg = p_att_result_msg_full;
+        fprintf(stdout,"\nmsg4 generated successfully %d \n",ret);
     }
     //  TODO: make sure python script frees this resource
-    //free(sp_db);
-    //sp_db = NULL;
     return ret;
 }
 

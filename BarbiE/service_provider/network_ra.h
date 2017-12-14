@@ -34,6 +34,7 @@
 #ifndef _NETWORK_RA_H
 #define _NETWORK_RA_H
 #include <stdbool.h>
+#include "sgx_tcrypto.h"
 
 // Enum for all possible message types between the ISV app and
 // the ISV SP. Requests and responses in the remote attestation
@@ -118,9 +119,10 @@ typedef struct _ra_samp_msg3_response_header_t{
 extern "C" {
 #endif
 
-int ra_network_send_receive(const char *server_url, void **pp_ra_ctx,
-                            const ra_samp_request_header_t *req,
-                            ra_samp_response_header_t **p_resp, uint8_t *project_id, uint8_t *spid, uint8_t *ias_crt, bool client_verify_ias);
+int ra_network_send_receive(const char *server_url, void **pp_ra_ctx, const ra_samp_request_header_t *req,
+                           ra_samp_response_header_t **p_resp,  const ra_samp_request_header_t *c_req, uint8_t *project_id,
+                           uint8_t *owner_mr_e, uint8_t *spid, uint8_t *ias_crt, bool client_verify_ias,
+                           sgx_ec256_private_t* priv_key);
 void ra_free_network_response_buffer(ra_samp_response_header_t *resp);
 
 #ifdef  __cplusplus

@@ -823,7 +823,7 @@ class ProjectPolicyRepo(BaseRepo):
         return entity
 
     def create_or_update_by_project_id(self, project_id,
-                                       policy, mr_s, mr_e, mr_e_list,
+                                       policy, attribute,
                                        session=None):
         session = self.get_session(session)
         query = session.query(models.ProjectPolicy)
@@ -831,12 +831,27 @@ class ProjectPolicyRepo(BaseRepo):
         try:
             entity = query.one()
         except sa_orm.exc.NoResultFound:
-            self.create_from(
-                models.ProjectPolicy(project_id, policy, mr_s, mr_e, mr_e_list),
-                    session=session)
+            if policy == 1:
+                self.create_from(
+                    models.ProjectPolicy(project_id, policy, attribute, None, None),
+                        session=session)
+            elif policy == 2:
+                self.create_from(
+                    models.ProjectPolicy(project_id, policy, None, attribute, None),
+                        session=session)
+            else:
+                self.create_from(
+                    models.ProjectPolicy(project_id, policy, None, None, attribute),
+                        session=session)
+
         else:
-            self._update_values(entity, {'policy' : policy, 'mr_s' : mr_s,
-                                         'mr_e' : mr_e, 'mr_e_list' : mr_e_list})
+            if policy == 1:
+                self._update_values(entity, {'policy' : policy, 'mr_s' : attribute})
+            elif policy == 2:
+                self._update_values(entity, {'policy' : policy, 'mr_e' : attribute})
+            else:
+                self._update_values(entity, {'policy' : policy, 'mr_e_list' : attribute})
+
             entity.save(session)
 
 class SecretStoreMetadatumRepo(BaseRepo):

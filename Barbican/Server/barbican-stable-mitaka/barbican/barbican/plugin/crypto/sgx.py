@@ -6,6 +6,8 @@ from barbican.common import utils
 from cffi import FFI
 from OpenSSL.crypto import load_publickey, load_certificate, X509, dump_publickey
 from OpenSSL.crypto import X509Store, verify, X509StoreContext, FILETYPE_PEM
+from ecdsa import SigningKey, NIST256p, VerifyingKey
+import unicodedata
 
 LOG = utils.getLogger(__name__)
 
@@ -145,6 +147,55 @@ class SGXInterface:
             LOG.error(str(e))
             raise Exception("Signature verification Failed on Server side", e)
 
+    def generate_key_pair(self):
+        separator = "="
+        key_dir = None
+        with open("/opt/BarbiE/env.properties") as f:
+            for line in f:
+                if separator in line:
+                    name, value = line.split(separator)
+                    if name.strip() == "KEY_PAIR_DIR":
+                        key_dir = value.strip()
+        pub_key_path = os.path.join(key_dir, "public_key.pem")
+        priv_key_path = os.path.join(key_dir, "private_key.pem")
+        if not os.path.exists(pub_key_path):
+            priv_key = SigningKey.generate(curve=NIST256p)
+            pub_key = priv_key.get_verifying_key()
+            open(priv_key_path,"w").write(priv_key.to_pem())
+            open(pub_key_path,"w").write(pub_key.to_pem())
+        else:
+            priv_key = SigningKey.from_pem(open(priv_key_path).read())
+            pub_key = VerifyingKey.from_pem(open(pub_key_path).read())
+
+        pk64 = pub_key.to_string()
+        pk_x, pk_y = pk64[:len(pk64)/2], pk64[len(pk64)/2:]
+        hex_priv_key = priv_key.to_string()
+        hex_sk = hex_priv_key.encode('hex')
+
+        pk_x = pk_x.encode('hex')
+        pk_y = pk_y.encode('hex')
+        hex_priv_key_out = [hex_sk[i:i + 2]for i in range(0, len(hex_sk), 2)]
+        pk_x_out = [pk_x[i:i + 2] for i in range(0,len(pk_x), 2)]
+        pk_y_out = [pk_y[i:i + 2] for i in range(0,len(pk_y), 2)]
+
+        pk_x_out.reverse()
+        pk_y_out.reverse()
+
+        pub_key = ""
+        for i in range(len(pk_x_out)):
+            pub_key = pub_key + pk_x_out[i]
+        for i in range(len(pk_y_out)):
+            pub_key = pub_key + pk_y_out[i]
+        hex_priv_key_out.reverse()
+        priv_key = ""
+        for i in range(len(hex_priv_key_out)):
+            priv_key = priv_key + hex_priv_key_out[i]
+
+        pub_key = base64.b64encode(pub_key + '\0')
+        priv_key = base64.b64encode(priv_key + '\0')
+
+        return pub_key , priv_key
+
     def gen_msg0(self, target_lib, spid=None):
         try:
             if spid is None:
@@ -174,22 +225,34 @@ class SGXInterface:
             LOG.error("Error in processing msg0")
             raise e
 
-    def gen_msg1(self, target_lib, enclave_id):
+    def gen_msg1(self, target_lib, enclave_id, pub_key):
         try:
+            if pub_key != None:
+                pub_key = base64.b64decode(pub_key)
+                key = self.ffi.new("char[]", pub_key)
+            else:
+                key = self.ffi.NULL
+
             p_ctxt = self.ffi.new("sgx_ra_context_t *")
             p_req1 = self.ffi.new("ra_samp_msg1_request_header_t **")
-            target_lib.gen_msg1(enclave_id, p_ctxt, p_req1)
+            target_lib.gen_msg1(enclave_id, p_ctxt, p_req1, key)
             msg1 = base64.b64encode(self.ffi.buffer(p_req1[0]))
             return p_ctxt[0], msg1
         except Exception as e:
             LOG.error("Error in generating msg1")
             raise e
 
-    def proc_msg1_gen_msg2(self, target_lib, msg1, p_net_ctxt):
+    def proc_msg1_gen_msg2(self, target_lib, msg1, p_net_ctxt, priv_key):
         try:
+            if priv_key != None:
+                priv_key = base64.b64decode(priv_key)
+                key = self.ffi.new("char[]", priv_key)
+            else:
+                key = self.ffi.NULL
+
             msg1 = self.ffi.from_buffer(base64.b64decode(msg1))
             pp_resp1 = self.ffi.new("ra_samp_msg1_response_header_t **")
-            target_lib.proc_msg1(msg1, p_net_ctxt, pp_resp1)
+            target_lib.proc_msg1(msg1, p_net_ctxt, pp_resp1, key)
             msg2 = base64.b64encode(self.ffi.buffer(pp_resp1[0]))
             return msg2
         except Exception as e:
@@ -204,7 +267,7 @@ class SGXInterface:
             pp_req2 = self.ffi.new("ra_samp_msg3_request_header_t **")
             resp_crt = self.ffi.new("uint8_t[]", 4000)
             resp_sign = self.ffi.new("uint8_t[]", 500)
-            resp_body = self.ffi.new("uint8_t[]", 1000)
+            resp_body = self.ffi.new("uint8_t[]", 1200)
             status = target_lib.gen_msg3(enclave_id, p_ctxt, msg2, pp_req2, ias_crt, client_verify_ias, server_verify_ias, resp_crt, resp_sign, resp_body)
             error = self.error_dict[str(status)]
             if(error != 'SP_QUOTE_VERIFICATION_FAILED'):
@@ -216,10 +279,11 @@ class SGXInterface:
             LOG.error("Error in generating msg3")
             raise e
 
-    def proc_msg3_gen_msg4(self, target_lib, enclave_id, msg3, p_net_ctxt, sealed_sk, project_id=None, ias_crt=None, client_verify_ias=False):
+    def proc_msg3_gen_msg4(self, target_lib, enclave_id, msg3, p_net_ctxt, sealed_sk, project_id=None, owner_mr_e=None, ias_crt=None, client_verify_ias=False, sealed_key2=None):
         try:
             if ias_crt is None:
                 ias_crt = self.ffi.NULL
+            owner_mr_e = self.ffi.from_buffer(base64.b64decode(owner_mr_e))
             msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
             if sealed_sk is None:
                 sealed_len = 0
@@ -232,15 +296,17 @@ class SGXInterface:
                 project_id = self.ffi.NULL
             else:
                 project_id_len = len(project_id)
+            sealed_key2_len = sealed_key2.length
+            sealed_key2 = self.ffi.from_buffer(base64.b64decode(sealed_key2.value))
             pp_resp2 = self.ffi.new("ra_samp_msg3_response_header_t **")
             target_lib.set_enclave(p_net_ctxt, enclave_id)
-            target_lib.set_secret(p_net_ctxt, sealed_sk, sealed_len)
-            status = target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2, project_id, ias_crt, client_verify_ias)
+            target_lib.set_secret(p_net_ctxt, sealed_sk, sealed_len, sealed_key2, sealed_key2_len)
+            status = target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2, self.ffi.NULL, project_id, owner_mr_e, ias_crt, client_verify_ias)
             #Initially using 177 length of msg4 but
             #after adding project id to msg4 using (209 + project id length) for msg4
             error = self.error_dict[str(status)]
             if(error != 'SP_QUOTE_VERIFICATION_FAILED'):
-                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(209 + project_id_len)))
+                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(417 + project_id_len)))
             else:
                 raise Exception("IAS verification failed")
             return msg4
@@ -248,42 +314,113 @@ class SGXInterface:
             LOG.error("Error in generating msg4")
             raise e
 
-    def legacy_proc_msg3_gen_msg4(self, target_lib, msg3, p_net_ctxt, plain_sk , project_id=None, ias_crt=None, client_verify_ias=False):
+    def ma_proc_msg4(self, target_lib, enclave_id, s_msg4, s_p_ctxt, c_msg3, c_p_net_ctxt, s_mk, mk_sk, policy_dict, ias_crt, client_verify_ias, project_id_len):
         try:
-            if ias_crt is None:
-                ias_crt = self.ffi.NULL
-            if project_id is None:
-                project_id_len = 0
-                project_id = self.ffi.NULL
+            plain_sk_len = 16
+            b64_iv = 16
+            b64_mac = 24
+            if s_mk and mk_sk:
+                LOG.info("Using existing buffers")
+                sealed_len = s_mk.length
+                sealed_mk = self.ffi.from_buffer(base64.b64decode(s_mk.value))
+                iv = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+                mac = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+                mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+                mk_sk_len = len(mk_sk)
             else:
-                project_id_len = len(project_id)
-            msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
+                LOG.info("Creating new buffers")
+                iv = self.ffi.new("uint8_t[]", self.iv)
+                mac = self.ffi.new("uint8_t[]", self.mac)
+                mk_sk = self.ffi.new("uint8_t[]", plain_sk_len)
+                sealed_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
+                sealed_mk = self.ffi.new("uint8_t[]", sealed_len)
+                #Set sealed len zero to let native side know this is output variable
+                mk_sk_len = plain_sk_len
+            if policy_dict:
+                policy = policy_dict['policy']
+                attribute = policy_dict['attribute']
+                iv1 = self.ffi.from_buffer(base64.b64decode(attribute[:b64_iv]))
+                mac1 = self.ffi.from_buffer(base64.b64decode(attribute[b64_iv:(b64_iv + b64_mac)]))
+                attribute = self.ffi.from_buffer(base64.b64decode(attribute[(b64_iv + b64_mac):]))
+                attribute_len = len(attribute)
+            else:
+                policy = 0
+                attribute = self.ffi.NULL
+                attribute_len = 0
+                iv1 = self.ffi.NULL
+                mac1 = self.ffi.NULL
+
+            s_msg4 = self.ffi.from_buffer(base64.b64decode(s_msg4))
+            c_msg3 = self.ffi.from_buffer(base64.b64decode(c_msg3))
             pp_resp2 = self.ffi.new("ra_samp_msg3_response_header_t **")
-            target_lib.set_secret(p_net_ctxt, plain_sk.value, plain_sk.length)
-            target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2, project_id, ias_crt, client_verify_ias)
-            #Initially using 177 length of msg4 but
-            #after adding project id to msg4 using (209 + project id length) for msg4
-            if(error != 'SP_QUOTE_VERIFICATION_FAILED'):
-                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(209 + project_id_len)))
+            status = target_lib.ma_proc_ra(enclave_id, s_msg4, s_p_ctxt, c_msg3, c_p_net_ctxt, pp_resp2, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, ias_crt, client_verify_ias, policy, attribute, attribute_len, iv1, mac1)
+            if status == 0:
+                c_msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(417 + project_id_len)))
+                sealed_mk = base64.b64encode(self.ffi.buffer(sealed_mk))
+                mk_sk = base64.b64encode(self.ffi.buffer(iv)) + base64.b64encode(self.ffi.buffer(mac)) + base64.b64encode(self.ffi.buffer(mk_sk))
+                sealed_mk_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
+                return Secret(sealed_mk, sealed_mk_len), mk_sk, c_msg4
             else:
-                raise Exception("IAS verification failed")
-            return msg4
+                raise Exception("Error getting sealed mk and mk_sk")
         except Exception as e:
-            LOG.error("Error in generating msg4")
+            LOG.error("Error in ma_proc_msg4")
             raise e
 
-    def proc_msg4(self, target_lib, enclave_id, msg4, p_ctxt):
+    def proc_msg4(self, target_lib, enclave_id, msg4, p_ctxt, sha2_client, sha2_server):
+        try:
+            sha2_client =  self.ffi.from_buffer(base64.b64decode(sha2_client))
+            sha2_server =  self.ffi.from_buffer(base64.b64decode(sha2_server))
+            msg4 = self.ffi.from_buffer(base64.b64decode(msg4))
+            plain_sk_len = 16
+            secret1_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
+            sealed_secret1 = self.ffi.new("uint8_t[]", secret1_len)
+            status = target_lib.proc_ra(enclave_id, p_ctxt, msg4, sealed_secret1,
+                                        secret1_len, self.ffi.NULL, 0)
+            secret1_buf = base64.b64encode(self.ffi.buffer(sealed_secret1))
+            target_lib.close_ra(enclave_id, p_ctxt)
+            return status, secret1_buf
+        except Exception as e:
+            LOG.error("Error in prcessing msg4 and retrieving sealed session key")
+            raise e
+
+    def new_proc_ra(self, target_lib, enclave_id, msg4, p_ctxt, s_mk, mk_sk):
         try:
             msg4 = self.ffi.from_buffer(base64.b64decode(msg4))
             plain_sk_len = 16
-            sealed_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
-            sealed_sk = self.ffi.new("uint8_t[]", sealed_len)
-            status = target_lib.proc_ra(enclave_id, p_ctxt, msg4, sealed_sk, self.ffi.cast("uint32_t", sealed_len))
-            sk_buf = base64.b64encode(self.ffi.buffer(sealed_sk))
-            target_lib.close_ra(enclave_id, p_ctxt)
-            return status, sk_buf
+            b64_iv = 16
+            b64_mac = 24
+            if s_mk and mk_sk:
+                LOG.info("Using existing buffers")
+                sealed_len = s_mk.length
+                sealed_mk = self.ffi.from_buffer(base64.b64decode(s_mk.value))
+                iv = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+                mac = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+                mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+                mk_sk_len = len(mk_sk)
+            else:
+                LOG.info("Creating new buffers")
+                iv = self.ffi.new("uint8_t[]", self.iv)
+                mac = self.ffi.new("uint8_t[]", self.mac)
+                mk_sk = self.ffi.new("uint8_t[]", plain_sk_len)
+                sealed_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
+                sealed_mk = self.ffi.new("uint8_t[]", sealed_len)
+                #Set sealed len zero to let native side know this is output variable
+                sealed_len = 0
+                mk_sk_len = 0
+            iv1 = self.ffi.new("uint8_t[]", self.iv)
+            mac1 = self.ffi.new("uint8_t[]", self.mac)
+            dh_sk = self.ffi.new("uint8_t[]", plain_sk_len)
+            dh_sk_len = plain_sk_len
+            status = target_lib.new_proc_ra(enclave_id, p_ctxt, msg4, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, dh_sk, dh_sk_len, iv1, mac1)
+            if status == 0:
+                sealed_mk = base64.b64encode(self.ffi.buffer(sealed_mk))
+                mk_sk = base64.b64encode(self.ffi.buffer(iv)) + base64.b64encode(self.ffi.buffer(mac)) + base64.b64encode(self.ffi.buffer(mk_sk))
+                dh_sk = base64.b64encode(self.ffi.buffer(iv1)) + base64.b64encode(self.ffi.buffer(mac1)) + base64.b64encode(self.ffi.buffer(dh_sk))
+                return Secret(sealed_mk, 576), mk_sk, dh_sk
+            else:
+                raise Exception("Error getting sealed mk, mk_sk and dh_sk")
         except Exception as e:
-            LOG.error("Error in prcessing msg4 and retrieving sealed session key")
+            LOG.error("Error in new_proc_ra")
             raise e
 
     def get_dh_key(self, target_lib, enclave_id, msg4, p_ctxt):
@@ -343,6 +480,92 @@ class SGXInterface:
             return Secret(base64.b64encode(self.ffi.buffer(sealed_key)), sealed_len)
         except Exception as e:
             LOG.error("Error in generating key")
+            raise e
+
+    def get_kek(self, target_lib, enclave_id, s_mk, mk_sk, sk_kek, project_id, project_id_len):
+        try:
+            plain_sk_len = 16
+            b64_iv = 16
+            b64_mac = 24
+            sealed_len = s_mk.length
+            sealed_mk = self.ffi.from_buffer(base64.b64decode(s_mk.value))
+            iv = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+            mac = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+            mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+            mk_sk_len = plain_sk_len
+
+            iv1 = self.ffi.from_buffer(base64.b64decode(sk_kek[:b64_iv]))
+            mac1 = self.ffi.from_buffer(base64.b64decode(sk_kek[b64_iv:(b64_iv + b64_mac)]))
+            sk_kek = self.ffi.from_buffer(base64.b64decode(sk_kek[(b64_iv + b64_mac):]))
+            sk_kek_len = plain_sk_len
+
+            sealed_kek_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
+            sealed_kek = self.ffi.new("uint8_t[]", sealed_kek_len)
+
+            status = target_lib.get_kek(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, sk_kek, sk_kek_len, iv1, mac1, sealed_kek, sealed_kek_len, project_id, project_id_len)
+            if status != 0:
+                raise Exception("Error in getting sealed kek")
+            return Secret(base64.b64encode(self.ffi.buffer(sealed_kek)), sealed_len)
+        except Exception as e:
+            LOG.error("Error in getting sealed kek")
+            raise e
+
+    def secret_encrypt(self, target_lib, enclave_id, s_mk, mk_sk, sk_secret, project_id, project_id_len):
+        try:
+            plain_sk_len = 16
+            b64_iv = 16
+            b64_mac = 24
+            sealed_len = s_mk.length
+            sealed_mk = self.ffi.from_buffer(base64.b64decode(s_mk.value))
+            iv = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+            mac = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+            mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+            mk_sk_len = plain_sk_len
+
+            iv1 = self.ffi.from_buffer(base64.b64decode(sk_secret[:b64_iv]))
+            mac1 = self.ffi.from_buffer(base64.b64decode(sk_secret[b64_iv:(b64_iv + b64_mac)]))
+            sk_secret = self.ffi.from_buffer(base64.b64decode(sk_secret[(b64_iv + b64_mac):]))
+            sk_secret_len = len(sk_secret)
+
+            mk_secret = self.ffi.new("uint8_t[]", sk_secret_len)
+            iv2 = self.ffi.new("uint8_t[]", self.iv)
+            mac2 = self.ffi.new("uint8_t[]", self.mac)
+
+            status = target_lib.secret_encrypt(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, sk_secret, sk_secret_len, iv1, mac1, mk_secret, sk_secret_len, iv2, mac2, project_id, project_id_len)
+            if status != 0:
+                raise Exception("Error in getting mk encrypted secret")
+            return base64.b64encode(self.ffi.buffer(iv2)) + base64.b64encode(self.ffi.buffer(mac2)) + base64.b64encode(self.ffi.buffer(mk_secret))
+        except Exception as e:
+            LOG.error("Error in getting mk encrypted secret")
+            raise e
+
+    def secret_decrypt(self, target_lib, enclave_id, s_mk, mk_sk, mk_secret, project_id, project_id_len):
+        try:
+            plain_sk_len = 16
+            b64_iv = 16
+            b64_mac = 24
+            sealed_len = s_mk.length
+            sealed_mk = self.ffi.from_buffer(base64.b64decode(s_mk.value))
+            iv = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+            mac = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+            mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+            mk_sk_len = plain_sk_len
+
+            iv1 = self.ffi.from_buffer(base64.b64decode(mk_secret[:b64_iv]))
+            mac1 = self.ffi.from_buffer(base64.b64decode(mk_secret[b64_iv:(b64_iv + b64_mac)]))
+            mk_secret = self.ffi.from_buffer(base64.b64decode(mk_secret[(b64_iv + b64_mac):]))
+            mk_secret_len = len(mk_secret)
+
+            sk_secret = self.ffi.new("uint8_t[]", mk_secret_len)
+            iv2 = self.ffi.new("uint8_t[]", self.iv)
+            mac2 = self.ffi.new("uint8_t[]", self.mac)
+
+            status = target_lib.secret_decrypt(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, mk_secret, mk_secret_len, iv1, mac1, sk_secret, mk_secret_len, iv2, mac2, project_id, project_id_len)
+            if status != 0:
+                raise Exception("Error in getting sk encrypted secret")
+            return base64.b64encode(self.ffi.buffer(iv2)) + base64.b64encode(self.ffi.buffer(mac2)) + base64.b64encode(self.ffi.buffer(sk_secret))
+        except Exception as e:
+            LOG.error("Error in getting sk encrypted secret")
             raise e
 
     def provision_kek(self, target_lib, enclave_id, sealed_sk, sk_kek, project_id=None):
@@ -405,13 +628,13 @@ class SGXInterface:
             sealed_len = sealed_sk.length
             sealed_sk = self.ffi.from_buffer(base64.b64decode(sealed_sk.value))
             secret = self.ffi.new("uint8_t[]", length)
-            target_lib.crypto_decrypt(enclave_id, sealed_sk, sealed_len, secret, length, enc_secret, iv, mac)
+            target_lib.crypto_decrypt(enclave_id, sealed_sk, sealed_len, secret, length, enc_secret, iv, mac, self.ffi.NULL, 0)
             return base64.b64encode(self.ffi.buffer(secret))
         except Exception as e:
             LOG.error("ERROR: Decryption of the secret failed!")
             raise e
 
-    def transport(self, target_lib, enclave_id, sealed_kek, sealed_sk , project_id=None):
+    def transport(self, target_lib, enclave_id, sealed_kek, sealed_sk, project_id=None):
         try:
             if project_id is None:
                 project_id = self.ffi.NULL
@@ -484,6 +707,62 @@ class SGXInterface:
             LOG.error("Error in decrypting the secret with kek")
             raise e
 
+    def get_mk_mr_list(self, target_lib, enclave_id, mk_sk, sealed_mk, sk_mr_list, project_id, project_id_len, mk_mr_list=None):
+        try:
+            b64_iv = 16
+            b64_mac = 24
+            iv1 = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+            mac1 = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+            mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+            sealed_mk_len = sealed_mk.length
+            sealed_mk = self.ffi.from_buffer(base64.b64decode(sealed_mk.value))
+            iv2 = self.ffi.from_buffer(base64.b64decode(sk_mr_list[:b64_iv]))
+            mac2 = self.ffi.from_buffer(base64.b64decode(sk_mr_list[b64_iv:(b64_iv + b64_mac)]))
+            sk_mr_list = self.ffi.from_buffer(base64.b64decode(sk_mr_list[(b64_iv + b64_mac):]))
+            iv = self.ffi.new("uint8_t[]", self.iv)
+            mac = self.ffi.new("uint8_t[]", self.mac)
+            if mk_mr_list is None:
+                mk_mr_list = self.ffi.NULL
+                iv3 = self.ffi.NULL
+                mac3 = self.ffi.NULL
+                mk_mr_list_len = 0
+            else:
+                iv3 = self.ffi.from_buffer(base64.b64decode(mk_mr_list[:b64_iv]))
+                mac3 = self.ffi.from_buffer(base64.b64decode(mk_mr_list[b64_iv:(b64_iv + b64_mac)]))
+                mk_mr_list = self.ffi.from_buffer(base64.b64decode(mk_mr_list[(b64_iv + b64_mac):]))
+                mk_mr_list_len = len(mk_mr_list)
+            new_mk_mr_list = self.ffi.new("uint8_t[]", len(sk_mr_list))
+            sk_mr_list_len = len(sk_mr_list)
+            target_lib.get_mk_mr_list(enclave_id, sealed_mk, sealed_mk_len, mk_sk, sk_mr_list, sk_mr_list_len, project_id, len(project_id), mk_mr_list, mk_mr_list_len, new_mk_mr_list, iv1, mac1, iv2, mac2, iv3, mac3, iv, mac)
+
+            return base64.b64encode(self.ffi.buffer(iv)) + base64.b64encode(self.ffi.buffer(mac)) + base64.b64encode(self.ffi.buffer(new_mk_mr_list))
+        except Exception as e:
+            LOG.error("Error generating mk_mr_list" + e)
+            raise e
+
+    def get_sk_data(self, target_lib, enclave_id, mk_sk, sealed_mk, mk_data, project_id, project_id_len):
+        try:
+            b64_iv = 16
+            b64_mac = 24
+            iv1 = self.ffi.from_buffer(base64.b64decode(mk_sk[:b64_iv]))
+            mac1 = self.ffi.from_buffer(base64.b64decode(mk_sk[b64_iv:(b64_iv + b64_mac)]))
+            mk_sk = self.ffi.from_buffer(base64.b64decode(mk_sk[(b64_iv + b64_mac):]))
+            sealed_mk_len = sealed_mk.length
+            sealed_mk = self.ffi.from_buffer(base64.b64decode(sealed_mk.value))
+            iv2 = self.ffi.from_buffer(base64.b64decode(mk_data[:b64_iv]))
+            mac2 = self.ffi.from_buffer(base64.b64decode(mk_data[b64_iv:(b64_iv + b64_mac)]))
+            mk_data = self.ffi.from_buffer(base64.b64decode(mk_data[(b64_iv + b64_mac):]))
+            mk_data_len = len(mk_data)
+            iv = self.ffi.new("uint8_t[]", self.iv)
+            mac = self.ffi.new("uint8_t[]", self.mac)
+            sk_data = self.ffi.new("uint8_t[]", len(mk_data))
+            target_lib.get_sk_data(enclave_id, sealed_mk, sealed_mk_len, mk_sk, mk_data, mk_data_len, project_id, len(project_id), sk_data, iv1, mac1, iv2, mac2, iv, mac)
+
+            return base64.b64encode(self.ffi.buffer(iv)) + base64.b64encode(self.ffi.buffer(mac)) + base64.b64encode(self.ffi.buffer(sk_data))
+        except Exception as e:
+            LOG.error("Error generating sk_data" + e)
+            raise e
+
     def compare_secret(self, target_lib, secret1, secret2, secret_len):
         try:
             secret1 = self.ffi.from_buffer(base64.b64decode(secret1))
@@ -494,6 +773,16 @@ class SGXInterface:
         except Exception as e:
             LOG.error("Error in comparing the secrets")
             raise e
+
+    def compare_sealed_secret(self, target_lib, encalve_id, secret1, secret2):
+        try:
+            secret1 = self.ffi.from_buffer(base64.b64decode(secret1))
+            secret2 = self.ffi.from_buffer(base64.b64decode(secret2))
+            if target_lib.crypto_sealed_cmp(encalve_id, secret1, len(secret1), secret2, len(secret2)) == 0:
+                return True
+            return False
+        except Exception as e:
+            raise Exception("Error in comparing the sealed secrets", e)
 
     def destroy_enclave(self, target_lib, enclave_id):
         try:
@@ -544,6 +833,16 @@ class SGXInterface:
             return base64.b64encode(self.ffi.buffer(mr_s, 32))
         except Exception as e:
             LOG.error("Error in retrieveing mr signer")
+            raise e
+
+    def get_report_sha256(self, target_lib, msg3):
+        try:
+            msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
+            sha256 = self.ffi.new("uint8_t []", 32)
+            target_lib.get_report_sha256(msg3, sha256)
+            return base64.b64encode(self.ffi.buffer(sha256))
+        except Exception as e:
+            LOG.error("Error in calculating SHA256")
             raise e
 
     def test_legacy_client(self):
@@ -639,73 +938,6 @@ class SGXInterface:
         finally:
             self.destroy_enclave(self.barbie_s, s_eid)
 
-    def test_sgx_client_with_sgx_hw(self, spid=None, crt_path=None):
-        c_eid = None
-        s_eid = None
-        try:
-            c_eid = self.init_enclave(self.barbie_c)
-            print "Client enclave ID : " + str(c_eid)
-            s_eid = self.init_enclave(self.barbie_s)
-            print "Server enclave ID : " + str(s_eid)
-
-            #Perform mutual attestation
-            ret, s_msg0 = self.gen_msg0(self.barbie_s, spid)
-            ret, c_msg0 = self.gen_msg0(self.barbie_c, spid)
-
-            s_p_ctxt, s_msg1 = self.gen_msg1(self.barbie_s, s_eid)
-            print "gen_msg1 returned: " + s_msg1
-            c_p_ctxt, c_msg1 = self.gen_msg1(self.barbie_c, c_eid)
-            print "gen_msg1 returned: " + c_msg1
-
-            ret, s_p_net_ctxt = self.proc_msg0(self.barbie_c, s_msg0, spid, True)
-            s_msg2 = self.proc_msg1_gen_msg2(self.barbie_c, s_msg1, s_p_net_ctxt)
-            print "send_msg1_recv_msg2 returned: " + s_msg2
-            ret, c_p_net_ctxt = self.proc_msg0(self.barbie_s, c_msg0, spid, True)
-            c_msg2 = self.proc_msg1_gen_msg2(self.barbie_s, c_msg1, c_p_net_ctxt)
-            print "send_msg1_recv_msg2 returned: " + c_msg2
-
-            s_msg3, s_crt, s_sig, s_resp_body = self.proc_msg2_gen_msg3(self.barbie_s, s_eid, s_msg2, s_p_ctxt, crt_path, True)
-            print "proc_msg2_gen_msg3 returned: " + s_msg3
-            c_msg3, c_crt, c_sig, c_resp_body = self.proc_msg2_gen_msg3(self.barbie_c, c_eid, c_msg2, c_p_ctxt, crt_path, True)
-            print "proc_msg2_gen_msg3 returned: " + c_msg3
-
-            s_msg4 = self.proc_msg3_gen_msg4(self.barbie_c, c_eid, s_msg3, s_p_net_ctxt, None ,  "sgx_with_hw", crt_path, True)
-            print "send_msg3_recv_msg4 returned: " + str(s_msg4)
-
-            project_id,project_id_size = self.get_project_id(self.barbie_s, s_eid, s_msg4, s_p_ctxt)
-
-            status, s_sk = self.proc_msg4(self.barbie_s, s_eid, s_msg4, s_p_ctxt)
-            #throw away this s_sk as the client is no longer sending in msg4
-            print "proc_ra returned: " + str(status)
-
-            s_mr_s = self.get_mr_signer(s_msg3)
-            print "MR Signer : " + str(s_mr_s)
-            s_mr_e = self.get_mr_enclave(s_msg3)
-            print "MR Enclave : " + str(s_mr_e)
-
-            mr_s = self.get_mr_signer(c_msg3)
-            print "MR Signer : " + str(mr_s)
-            mr_e = self.get_mr_enclave(c_msg3)
-            print "MR Enclave : " + str(mr_e)
-
-            print self.compare_secret(self.barbie_s, s_mr_s, mr_s, 32)
-            print self.compare_secret(self.barbie_s, s_mr_e, mr_e, 32)
-
-            s_sk = self.generate_key(self.barbie_s, s_eid, 16)
-            c_msg4 = self.proc_msg3_gen_msg4(self.barbie_s, s_eid, c_msg3, c_p_net_ctxt, s_sk, "sgx_with_hw", crt_path, True)
-            print "send_msg3_recv_msg4 returned: " + str(c_msg4)
-
-            status, c_sealed_sk = self.proc_msg4(self.barbie_c, c_eid, c_msg4, c_p_ctxt)
-            print "proc_ra returned: " + str(status)
-
-            print self.compare_secret(self.barbie_c, c_sealed_sk, s_sk.value, 16)
-
-        finally:
-            if c_eid:
-                self.destroy_enclave(self.barbie_c, c_eid)
-            if s_eid:
-                self.destroy_enclave(self.barbie_s, s_eid)
-
 if __name__ == "__main__":
     obj = SGXInterface()
     if len(sys.argv) < 3:
@@ -720,6 +952,3 @@ if __name__ == "__main__":
     print "--------------------------------------------------Legacy Client(START)--------------------------------------------------------"
     obj.test_legacy_client()
     print "---------------------------------------------------Legacy Client(END)---------------------------------------------------------"
-    print "---------------------------------------SGX Aware Client With SGX hardware(START)-------------------------------------------"
-    obj.test_sgx_client_with_sgx_hw(SPID, CRT_PATH)
-    print "----------------------------------------SGX Aware Client With SGX hardware(END)--------------------------------------------"

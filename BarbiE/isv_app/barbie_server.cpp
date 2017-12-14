@@ -70,11 +70,3 @@ int crypto_get_secret(sgx_enclave_id_t enclave_id, uint8_t *kek_enc_sk, size_t k
     return status;
 }
 
-int crypto_provision_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_sk, size_t sealed_sk_len, uint8_t *sk_enc_kek, size_t sk_enc_kek_len, uint8_t *iv, uint8_t *mac, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len)
-{
-	sgx_status_t sgx_ret = SGX_SUCCESS, status = SGX_SUCCESS;
-        sgx_ret = ecall_provision_kek(enclave_id, &status, sealed_sk, sealed_sk_len, sk_enc_kek, sk_enc_kek_len, iv, mac, sealed_kek, sealed_kek_len, project_id, project_id_len);
-        if (sgx_ret != SGX_SUCCESS) return sgx_ret;
-        return status;
-}
-

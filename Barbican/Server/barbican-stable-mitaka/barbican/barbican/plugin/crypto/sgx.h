@@ -1,3 +1,5 @@
+#define SGX_ECP256_KEY_SIZE	32
+
 typedef uint64_t sgx_enclave_id_t;
 // Enum for all possible message types between the ISV app and
 // the ISV SP. Requests and responses in hte remote attestation
@@ -58,6 +60,17 @@ typedef struct _ra_samp_msg3_response_header_t{
     uint8_t align[1];
     uint8_t body[145];
 }ra_samp_msg3_response_header_t;
+
+typedef struct sgx_ec256_public_t
+{
+    uint8_t gx[SGX_ECP256_KEY_SIZE];
+    uint8_t gy[SGX_ECP256_KEY_SIZE];
+}sgx_ec256_public_t;
+
+typedef struct sgx_ec256_private_t
+{
+    uint8_t r[SGX_ECP256_KEY_SIZE];
+}sgx_ec256_private_t;
 
 typedef uint32_t sgx_ra_context_t;
 
@@ -142,7 +155,7 @@ int crypto_legacy_encrypt(uint8_t *key, size_t key_len, char *plain_text, size_t
 *   Output:
 *           [3] plain_text
 */
-int crypto_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_key, size_t sealed_key_len, char *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac);
+int crypto_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_key, size_t sealed_key_len, char *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac, uint8_t *project_id, size_t project_id_len);
 /*
 *   Securely decrypt user symmetric key (SK) encrypted secret and encrypt with key encryption key (KEK) retreived from sealed kek blob.
 * Parameters:
@@ -199,9 +212,11 @@ int crypto_get_secret(sgx_enclave_id_t enclave_id, uint8_t *kek_enc_sk, size_t k
 */
 int gen_msg0(ra_samp_msg0_request_header_t **pp_msg0_full, uint8_t *spid);
 int proc_msg0(ra_samp_msg0_request_header_t *p_msg_full, void **pp_ra_ctx, uint8_t *spid, bool client_verify_ias);
-int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full);
+int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full, char *pub_key);
 int gen_msg3(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg1_response_header_t *p_msg2_full, ra_samp_msg3_request_header_t** pp_msg3_full, uint8_t *ias_crt, bool client_verify_ias, bool server_verify_ias, uint8_t *resp_crt, uint8_t *resp_sign, uint8_t *resp_body);
-int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, uint8_t *project_id, uint8_t *ias_crt, bool client_verify_ias);
+int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, ra_samp_msg3_request_header_t *p_msg_full, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *ias_crt, bool client_verify_ias);
+int get_mk_mr_list(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *sk_mr_list, size_t sk_mr_list_len, uint8_t *project_id, size_t project_id_len, uint8_t *mk_mr_list, size_t mk_mr_list_len, uint8_t *new_mk_mr_list, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv3, uint8_t *mac3, uint8_t *iv, uint8_t *mac);
+int get_sk_data(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *mk_data, size_t mk_data_len, uint8_t *project_id, size_t project_id_len, uint8_t *sk_data, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv, uint8_t *mac);
 /*
 *   Processes RA msg2 and if successful generates msg3.
 * Parameters:
@@ -210,7 +225,7 @@ int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_sa
 *           [2] p_msg2_full - msg2 header and body.
 *   Output: [3] p_msg3_full - msg3 header and body.
 */
-int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full);
+int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full, sgx_ec256_private_t* priv_key);
 /*
 *   Processes RA msg4 (attestation result) and if successful extracts secret being provisioned.
 * Parameters:
@@ -219,7 +234,10 @@ int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_sa
 *           [3] p_att_result_msg_full - msg4 header and body.
 *   Output: [1] sealed_secret - provisioned secret in sealed form.
 */
-int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len);
+int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len, uint8_t *sealed_secret2, size_t secret2_len);
+
+int ma_proc_ra(sgx_enclave_id_t enclave_id, ra_samp_msg3_response_header_t* s_msg4, sgx_ra_context_t s_p_ctxt, ra_samp_msg3_request_header_t* c_msg3, void **c_p_net_ctxt, ra_samp_msg3_response_header_t **pp_resp2, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *ias_crt, bool client_verify_ias, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1);
+int new_proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *dh_sk, size_t dk_sk_len, uint8_t *iv1, uint8_t *mac1);
 /*
 *   Close RA session using handle.
 * Parameters:
@@ -244,8 +262,12 @@ int close_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context);
 */
 int crypto_provision_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_sk, size_t sealed_sk_len, uint8_t *sk_enc_kek, size_t sk_enc_kek_len, uint8_t *iv, uint8_t *mac, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len);
 
+int get_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_kek, size_t sk_kek_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len);
+int secret_encrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_secret, size_t sk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *mk_secret, size_t plain_sk_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len);
+int secret_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *mk_secret, size_t mk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sk_secret, size_t plain_sk_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len);
+
 int set_enclave(void **pp_ra_ctx, sgx_enclave_id_t enclave_id);
-int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len);
+int set_secret(void **pp_ra_ctx, uint8_t *secret, size_t secret_len, uint8_t *secret2, size_t secret2_len);
 
 size_t get_sealed_data_len(sgx_enclave_id_t enclave_id, size_t add, size_t plain_len);
 size_t get_add_mac_len(sgx_enclave_id_t enclave_id, uint8_t* sealed_buf_ptr, uint32_t sealed_len);
@@ -272,3 +294,4 @@ int get_project_id_len(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra
 int get_project_id(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *project_id);
 uint8_t *get_mr_e(ra_samp_msg3_request_header_t *p_msg3);
 uint8_t *get_mr_s(ra_samp_msg3_request_header_t *p_msg3);
+int get_report_sha256(ra_samp_msg3_request_header_t *p_msg3, uint8_t *sha256);

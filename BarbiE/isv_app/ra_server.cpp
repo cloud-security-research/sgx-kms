@@ -54,8 +54,9 @@
 #include "service_provider.h"
 #include "isv_app.h"
 #include "ra_server.h"
+#include "common.h"
 
-int proc_msg_gen_resp(ra_samp_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_response_header_t **pp_msg_resp_full, uint8_t *project_id, uint8_t *spid, uint8_t *ias_crt, bool client_verify_ias)
+int proc_msg_gen_resp(ra_samp_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_response_header_t **pp_msg_resp_full, ra_samp_request_header_t *c_p_msg_full, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *spid, uint8_t *ias_crt, bool client_verify_ias, sgx_ec256_private_t* priv_key)
 {
     //todo check input
     int ret = 0;
@@ -67,7 +68,7 @@ int proc_msg_gen_resp(ra_samp_request_header_t *p_msg_full, void **pp_ra_ctx, ra
 
         ret = ra_network_send_receive("http://SampleServiceProvider.intel.com/", pp_ra_ctx,
             p_msg_full,
-            pp_msg_resp_full, project_id, spid, ias_crt, client_verify_ias);
+            pp_msg_resp_full, c_p_msg_full, project_id, owner_mr_e, spid, ias_crt, client_verify_ias, priv_key);
         if (ret != 0)
         {
             fprintf(OUTPUT, "\nError, ra_network_send_receive for msg0 failed "
@@ -84,20 +85,30 @@ int proc_msg0(ra_samp_msg0_request_header_t *p_msg_full, void **pp_ra_ctx, uint8
     p_msg0 =  (sample_ra_msg0_t *)p_msg_full->body;
     if(!client_verify_ias)
     {
-        return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, NULL, NULL, (uint8_t*)p_msg0->spid, NULL, false);
+        return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, NULL, NULL, NULL, NULL, (uint8_t*)p_msg0->spid, NULL, false, NULL);
     }
 
-    return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, NULL, NULL, spid, NULL, false);
+    return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, NULL, NULL, NULL, NULL, spid, NULL, false, NULL);
 }
 
-int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full)
+int proc_msg1(ra_samp_msg1_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg1_response_header_t **pp_msg_resp_full, char* priv_key)
 {
-    return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, (ra_samp_response_header_t **)pp_msg_resp_full, NULL, NULL, NULL, false);
+    sgx_ec256_private_t *priv_key1;
+    int ret = 0;
+
+    unsigned char *byteArray = makeByteArray(priv_key);
+    priv_key1 =(sgx_ec256_private_t*) malloc(sizeof(sgx_ec256_private_t));
+    memcpy(&(priv_key1->r), &byteArray[0], 32);
+
+    ret = proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, (ra_samp_response_header_t **)pp_msg_resp_full, NULL, NULL, NULL, NULL, NULL, false, priv_key1);
+
+    free(priv_key1);
+    return ret;
 }
 
-int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, uint8_t *project_id, uint8_t *ias_crt, bool client_verify_ias)
+int proc_msg3(ra_samp_msg3_request_header_t *p_msg_full, void **pp_ra_ctx, ra_samp_msg3_response_header_t **pp_msg_resp_full, ra_samp_msg3_request_header_t *c_p_msg_full, uint8_t *project_id, uint8_t *owner_mr_e, uint8_t *ias_crt, bool client_verify_ias)
 {
-    return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, (ra_samp_response_header_t **)pp_msg_resp_full, project_id, NULL, ias_crt, client_verify_ias);
+    return proc_msg_gen_resp((ra_samp_request_header_t *)p_msg_full, pp_ra_ctx, (ra_samp_response_header_t **)pp_msg_resp_full, (ra_samp_request_header_t *)c_p_msg_full, project_id, owner_mr_e, NULL, ias_crt, client_verify_ias, NULL);
 }
 
 int get_sk(void **pp_ra_ctx, uint8_t *plain_sk, size_t sk_len, uint8_t *enc_sk, uint8_t *sk_iv, uint8_t *sk_mac) {

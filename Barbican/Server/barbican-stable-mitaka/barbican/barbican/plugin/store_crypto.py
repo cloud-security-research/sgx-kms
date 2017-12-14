@@ -271,28 +271,67 @@ class StoreCryptoAdapterPlugin(object):
             crypto.PluginSupportTypes.ENCRYPT_DECRYPT
         )
         enc_keys = _get_enc_keys(external_project_id)
+        policy_dict = _get_project_policy(external_project_id)
         response, output =  encrypting_plugin.do_attestation(data, external_project_id,
-                                                             enc_keys, is_mutual)
+                                                             enc_keys, is_mutual, policy_dict)
         if output:
-            ret = _post_processing(external_project_id, enc_keys, output, is_mutual, context)
-            if ret:
-                if is_mutual:
-                    del response['c_msg4']
-                else:
-                    del response['session_key']
-                response['status'] = ret
+            _store_enc_keys(external_project_id, output['sk'], output['mk'])
 
         return response
 
-    def do_provision_kek(self, data, external_project_id):
+    def do_provision_kek(self, data, project_id):
         encrypting_plugin = manager.get_manager().get_plugin_store_generate(
             crypto.PluginSupportTypes.ENCRYPT_DECRYPT
         )
-        enc_keys = _get_enc_keys(external_project_id)
-        response, output =  encrypting_plugin.do_provision_kek(data, external_project_id, enc_keys)
-        _store_enc_keys(external_project_id, output['sk'], output['mk'])
+        enc_keys = _get_enc_keys(project_id)
+        response, output =  encrypting_plugin.do_provision_kek(data, project_id, enc_keys)
+        if output:
+            _store_enc_keys(project_id, output['sk'], output['mk'])
         return response
 
+    def update_policy(self, data, project_id):
+        policy_type = data['policy']
+        attribute = data['attribute']
+        enc_keys = _get_enc_keys(project_id)
+        if enc_keys:
+            encrypting_plugin = manager.get_manager().get_plugin_store_generate(
+                crypto.PluginSupportTypes.ENCRYPT_DECRYPT
+            )
+            response = _get_project_policy(project_id)
+            if response:
+                mk_mr_e = response['attribute']
+                mk_attribute = None
+                try:
+                    mk_attribute = encrypting_plugin.mk_encrypt(enc_keys, attribute, project_id, mk_mr_e)
+                except Exception as e:
+                    return {'status' : 'Unable to decrypt with valid Session Key of this project. Unauthorized to update policy.'}
+            else:
+                mk_attribute = encrypting_plugin.mk_encrypt(enc_keys, attribute, project_id, None)
+            _store_project_policy(project_id, policy_type, mk_attribute)
+        else:
+            return {'status' : 'Session key not yet provisioned for this project. Please perform Remote/Mutual Attestation first.'}
+
+        return {'status' : 'OK'}
+
+    def get_policy(self, project_id):
+        response = _get_project_policy(project_id)
+        if response:
+            attribute = response['attribute']
+            enc_keys = _get_enc_keys(project_id)
+            if enc_keys:
+                sk_attribute = None
+                encrypting_plugin = manager.get_manager().get_plugin_store_generate(
+                    crypto.PluginSupportTypes.ENCRYPT_DECRYPT
+                )
+                sk_attribute = encrypting_plugin.mk_decrypt(enc_keys, attribute, project_id)
+
+                response['attribute'] = sk_attribute
+            else:
+                return {'status' : 'Session Key not provisioned for this project. Please perform Remote/Mutual Attestation first'}
+        else:
+            return {'status' : 'No Policy set for this project.'}
+
+        return response
 
 def _determine_generation_type(algorithm):
     """Determines the type based on algorithm."""
@@ -352,46 +391,6 @@ def _store_secret_and_datum(
     repositories.get_encrypted_datum_repository().create_from(
         datum_model)
 
-def _post_processing(project_id, enc_keys, output, is_mutual, context):
-
-    if not enc_keys:
-        _store_enc_keys(project_id, output['sk'], output['mk'])
-
-    is_policy_present = _is_policy_present(project_id)
-    policy = output.get('policy', None)
-    mr_s = output.get('mr_signer', None)
-    mr_e = output.get('mr_enclave', None)
-    mk_mr_e_list = output.get('mk_mr_e_list', None)
-    response = None
-
-    is_policy_valid = False
-    if not is_policy_present:
-        LOG.info("Policy not present!")
-        if not policy:
-            if context:
-                if not context.is_admin:
-                    response = 'Project policy is not set. Please set the policy with Mutual Attestation'
-            else:
-                response = 'Project policy is not set. Please set the policy with Mutual Attestation'
-        else:
-            LOG.info("Policy provided")
-            if policy == '3' and not mk_mr_e_list:
-                response = 'Project policy requires list of third party MR Enclaves. Please provide it'
-            else:
-                _store_project_policy(project_id, policy, mr_s, mr_e, mk_mr_e_list)
-    else:
-        LOG.info("Policy present!")
-        is_policy_valid, is_parent_enclave = _validate_project_policy(project_id, mr_s, mr_e)
-        if is_policy_valid:
-            if is_mutual and policy:
-                if is_parent_enclave:
-                    _store_project_policy(project_id, policy, mr_s, mr_e, mk_mr_e_list)
-                else:
-                    response = 'Not authorized to update the policy'
-        else:
-            response = 'Attestation failed due to failure in policy validation'
-    return response
-
 def _store_enc_keys(project_id, session_key, master_key):
     project_repo = repositories.get_project_repository()
     project = project_repo.find_by_external_project_id(project_id,
@@ -413,73 +412,30 @@ def _get_enc_keys(project_id):
     if sk:
         return {'sk' : sk.session_key, 'mk' : sk.master_key}
 
-def _store_project_policy(project_id, policy, mr_s, mr_e, mk_mr_e_list):
+def _store_project_policy(project_id, policy, mk_attribute):
     project_repo = repositories.get_project_repository()
     project = project_repo.find_by_external_project_id(project_id,
                                                        suppress_exception=True)
     project_policy_repo = repositories.get_project_policy_repository()
-    project_policy_repo.create_or_update_by_project_id(project.id, policy, mr_s, mr_e, mk_mr_e_list)
+    project_policy_repo.create_or_update_by_project_id(project.id, policy, mk_attribute)
 
-def _is_policy_present(project_id):
+def _get_project_policy(project_id):
     project_policy_repo = repositories.get_project_policy_repository()
     project_policy = project_policy_repo.get_by_external_project_id(project_id,
                                                                     suppress_exception=True)
+    policy = None
     if project_policy:
-        return True
-    return False
+        policy = {}
+        policy['policy'] = project_policy.policy
 
-def _validate_project_policy(project_id, new_mr_s, new_mr_e):
-    valid = True
-    not_valid = False
-    parent_enclave = True
-    not_parent_enclave = False
-    LOG.info("Validating project policy...")
-    project_repo = repositories.get_project_repository()
-    project = project_repo.find_by_external_project_id(project_id,
-                                                       suppress_exception=True)
-    project_policy_repo = repositories.get_project_policy_repository()
-    project_policy = project_policy_repo.get_by_external_project_id(project_id,
-                                                                    suppress_exception=True)
-    policy = project_policy.policy
-    enc_keys = _get_enc_keys(project_id)
-
-    if policy == 0:
-        LOG.info("Policy 0 is to be applied. No validation of client")
-        return valid, parent_enclave
-
-    if not new_mr_s or not new_mr_e:
-        LOG.info("Policy greater than 0 is to be applied on client without SGX hardware. Policy validation failed.")
-        return not_valid, not_parent_enclave
-
-    encrypting_plugin = manager.get_manager().get_plugin_store_generate(
-        crypto.PluginSupportTypes.ENCRYPT_DECRYPT
-    )
-    ori_mr_e = project_policy.mr_e
-    ori_mr_s = project_policy.mr_s
-
-    if policy == 1:
-        LOG.info("Policy 1 is to be applied. Validating the MR Signer")
-        if encrypting_plugin.compare_buffer(new_mr_s, ori_mr_s, 32):
-            return valid, parent_enclave
+        if project_policy.policy == '1':
+            policy['attribute'] = project_policy.mr_e
+        elif project_policy.policy == '2':
+            policy['attribute'] = project_policy.mr_s
         else:
-            LOG.info("MR Signer validation failed.")
-    if policy == 2:
-        LOG.info("Policy 2 is to be applied. Validating the MR Enclave")
-        if encrypting_plugin.compare_buffer(new_mr_e, ori_mr_e, 32):
-            return valid, parent_enclave
-        else:
-            LOG.info("MR Enclave validation failed.")
-    if policy == 3:
-        mr_e_list = project_policy.mr_e_list.split(" ")
-        LOG.info("Policy 3 is to be applied. Validating the MR Enclave")
-        if ori_mr_e and encrypting_plugin.compare_buffer(new_mr_e, ori_mr_e, 32):
-            return valid, parent_enclave
-        elif encrypting_plugin.compare_mr_e_list(new_mr_e, mr_e_list, enc_keys['mk'], project_id):
-            return valid, not_parent_enclave
-        else:
-            LOG.info("MR Enclave validation failed.")
+            policy['attribute'] = project_policy.mr_e_list
 
-    return not_valid, not_parent_enclave
+    return policy
 
 def _indicate_bind_completed(kek_meta_dto, kek_datum):
     """Updates the supplied kek_datum instance

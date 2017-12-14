@@ -331,3 +331,35 @@ void ocall_print_string(const char *str)
      */
     printf("%s", str);
 }
+
+int crypto_provision_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_sk, size_t sealed_sk_len, uint8_t *sk_enc_kek, size_t sk_enc_kek_len, uint8_t *iv, uint8_t *mac, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len)
+{
+	sgx_status_t sgx_ret = SGX_SUCCESS, status = SGX_SUCCESS;
+        sgx_ret = ecall_provision_kek(enclave_id, &status, sealed_sk, sealed_sk_len, sk_enc_kek, sk_enc_kek_len, iv, mac, sealed_kek, sealed_kek_len, project_id, project_id_len);
+        if (sgx_ret != SGX_SUCCESS) return sgx_ret;
+        return status;
+}
+
+unsigned char *makeByteArray(char *str) {
+
+    unsigned char *ret;
+    int i = 0;
+    if (*str == '\0') return NULL;
+    ret = (unsigned char *)malloc (strlen(str) / 2);
+    if (ret == NULL) return NULL;
+
+    while (*str != '\0') {
+        if (*str > '9')
+            ret[i] = ((tolower(*str) - 'a') + 10) << 4;
+        else
+            ret[i] = (*str - '0') << 4;
+        str++;
+        if (*str > '9')
+            ret[i] |= tolower(*str) - 'a' + 10;
+        else
+            ret[i] |= *str - '0';
+        str++;
+        i++;
+    }
+    return ret;
+}

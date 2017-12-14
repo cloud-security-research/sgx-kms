@@ -52,6 +52,8 @@
 
 #include "service_provider.h"
 #include "ra_client.h"
+#include "barbie_client.h"
+#include "common.h"
 
 // Some utility functions to output some of the data structures passed between
 // the ISV app and the remote attestation service provider.
@@ -223,7 +225,7 @@ int proc_msg_gen_resp(ra_samp_request_header_t *p_msg_full, void **pp_ra_ctx, ra
 */
 
 //int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_request_header_t **pp_msg1_full)
-int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full)
+int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg1_request_header_t **pp_msg1_full, char *pub_key)
 {
     //todo check input
     int ret = 0;
@@ -232,6 +234,18 @@ int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg
     int busy_retry_time = 4;
     sgx_status_t status = SGX_SUCCESS;
     FILE* OUTPUT = stdout;
+
+    unsigned char *byteArray = makeByteArray(pub_key);
+
+    sgx_ec256_public_t *pub_key1;
+    pub_key1 =(sgx_ec256_public_t*) malloc(sizeof(sgx_ec256_public_t));
+
+    memcpy(&(pub_key1->gx), &byteArray[0], 32);
+    memcpy(&(pub_key1->gy), &byteArray[32], 32);
+
+    PRINT_BYTE_ARRAY(OUTPUT, pub_key1, sizeof(sgx_ec256_public_t));
+
+
     // Remote attestation will be initiated the ISV server challenges the ISV
     // app or if the ISV app detects it doesn't have the credentials
     // (shared secret) from a previous attestation required for secure
@@ -243,9 +257,12 @@ int gen_msg1(sgx_enclave_id_t enclave_id, sgx_ra_context_t *context, ra_samp_msg
             ret = enclave_init_ra(enclave_id,
                                   &status,
                                   false,
-                                  context);
+                                  context,
+                                  pub_key1);
         //Ideally, this check would be around the full attestation flow.
         } while (SGX_ERROR_ENCLAVE_LOST == ret && enclave_lost_retry_time--);
+
+        free(pub_key1);
 
         if(SGX_SUCCESS != ret || status)
         {
@@ -419,7 +436,187 @@ CLEANUP:
     return ret;
 }
 
-int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len)
+int secret_encrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_secret, size_t sk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *mk_secret, size_t mk_secret_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len)
+{
+    uint8_t *sealed_sk;
+    uint8_t *sealed_secret;
+    sealed_sk = NULL;
+    sealed_secret = NULL;
+    sealed_sk = (uint8_t *) malloc(sealed_len);
+    size_t sealed_secret_len = get_sealed_data_len(enclave_id, 0, sk_secret_len);
+    sealed_secret = (uint8_t *) malloc(sealed_secret_len);
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_len, project_id, project_id_len);
+
+    crypto_provision_kek(enclave_id, sealed_sk, sealed_len, sk_secret, sk_secret_len, iv1, mac1, sealed_secret, sealed_secret_len, NULL, 0);
+
+    crypto_transport_secret(enclave_id, sealed_mk, sealed_len, sealed_secret, sealed_secret_len, mk_secret, mk_secret_len, iv2, mac2, project_id, project_id_len);
+
+    free(sealed_sk);
+    free(sealed_secret);
+    sealed_sk = NULL;
+    sealed_secret = NULL;
+    return 0;
+}
+
+int secret_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *mk_secret, size_t mk_secret_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sk_secret, size_t sk_secret_len, uint8_t *iv2, uint8_t *mac2, uint8_t *project_id, size_t project_id_len)
+{
+    uint8_t *sealed_sk, *sealed_secret;
+    sealed_sk = NULL;
+    sealed_secret = NULL;
+    sealed_sk = (uint8_t *) malloc(sealed_len);
+    size_t sealed_secret_len = get_sealed_data_len(enclave_id, 0, mk_secret_len);
+    sealed_secret = (uint8_t *) malloc(sealed_secret_len);
+
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_len, project_id, project_id_len);
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_len, mk_secret, mk_secret_len, iv1, mac1, sealed_secret, sealed_secret_len, project_id, project_id_len);
+    crypto_transport_secret(enclave_id, sealed_sk, sealed_len, sealed_secret, sealed_secret_len, sk_secret, sk_secret_len, iv2, mac2, NULL, 0);
+
+    free(sealed_sk);
+    free(sealed_secret);
+    sealed_sk = NULL;
+    sealed_secret = NULL;
+    return 0;
+}
+
+int get_kek(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *sk_kek, size_t sk_kek_len, uint8_t *iv1, uint8_t *mac1, uint8_t *sealed_kek, size_t sealed_kek_len, uint8_t *project_id, size_t project_id_len)
+{
+    uint8_t *sealed_sk = (uint8_t *) malloc(sealed_len);
+
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_len, project_id, project_id_len);
+
+    crypto_provision_kek(enclave_id, sealed_sk, sealed_len, sk_kek, sk_kek_len, iv1, mac1, sealed_kek, sealed_kek_len, NULL, 0);
+    return 0;
+}
+
+int new_proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *dh_sk, size_t dh_sk_len, uint8_t *iv1, uint8_t *mac1)
+{
+    size_t sealed_len = get_sealed_data_len(enclave_id, 0, SK_KEY_SIZE);
+    uint8_t *sealed_dh;
+    sealed_dh = NULL;
+    sealed_dh = (uint8_t *) malloc(sealed_len);
+    uint8_t *sealed_sk;
+    sealed_sk = NULL;
+    sealed_sk = (uint8_t *) malloc(sealed_len);
+    get_dh_key(enclave_id, context, p_att_result_msg_full, sealed_dh, sealed_len);
+
+    size_t project_id_len = get_project_id_len(enclave_id, context, p_att_result_msg_full);
+    uint8_t *project_id = (uint8_t *)malloc(project_id_len);
+    get_project_id(enclave_id, context, p_att_result_msg_full, project_id);
+
+    if(sealed_mk_len == 0 && mk_sk_len == 0)
+    {
+        fprintf(stdout, "\nGenerate new keys\n");
+        crypto_generate_key(enclave_id, SK_KEY_SIZE, sealed_sk, sealed_len);
+        sealed_mk_len = sealed_len;
+        crypto_generate_key(enclave_id, SK_KEY_SIZE, sealed_mk, sealed_mk_len);
+        crypto_transport_secret(enclave_id, sealed_mk, sealed_mk_len, sealed_sk, sealed_len, mk_sk, SK_KEY_SIZE, iv, mac, project_id, project_id_len);
+    }
+    else
+    {
+        crypto_provision_kek(enclave_id, sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_len, project_id, project_id_len);
+    }
+    crypto_transport_secret(enclave_id, sealed_dh, sealed_len, sealed_sk, sealed_len, dh_sk, SK_KEY_SIZE, iv1, mac1, NULL, 0);
+    return 0;
+}
+
+int ma_proc_ra(sgx_enclave_id_t enclave_id, ra_samp_msg3_response_header_t* s_msg4, sgx_ra_context_t s_p_ctxt, ra_samp_msg3_request_header_t *c_msg3, void **c_p_net_ctxt, ra_samp_msg3_response_header_t **pp_resp2, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *ias_crt, bool client_verify_ias, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1)
+{
+    sgx_status_t status = SGX_SUCCESS;
+    int ret = 0;
+    sample_ra_att_result_msg_t *p_att_result_msg_body = NULL;
+    uint8_t *mr_to_verify = NULL;
+    size_t sealed_nonse_len = get_sealed_data_len(enclave_id, 0, SK_KEY_SIZE);
+
+    proc_ra(enclave_id, s_p_ctxt, s_msg4, NULL, 0, NULL, 0);
+
+    size_t project_id_len = get_project_id_len(enclave_id, s_p_ctxt, s_msg4);
+    uint8_t *project_id = (uint8_t *)malloc(project_id_len);
+    get_project_id(enclave_id, s_p_ctxt, s_msg4, project_id);
+
+    ra_samp_request_header_t *c_msg3_full = (ra_samp_request_header_t *)c_msg3;
+    sgx_ra_msg3_t *c_msg3_final = (sgx_ra_msg3_t*)((uint8_t*)c_msg3_full + sizeof(ra_samp_request_header_t));
+    sgx_quote_t *c_msg3_p_quote = (sgx_quote_t *)c_msg3_final->quote;
+    size_t c_msg3_p_quote_len = sizeof(sgx_quote_t);
+
+
+    sample_ra_att_result_msg_t *s_msg4_body = NULL;
+    sample_ra_att_result_msg_t *c_msg4_body = NULL;
+    size_t c_msg4_body_len = sizeof(sample_ra_att_result_msg_t) + project_id_len;
+    c_msg4_body = (sample_ra_att_result_msg_t *) malloc(c_msg4_body_len);
+    s_msg4_body = (sample_ra_att_result_msg_t *)s_msg4->body;
+    size_t s_msg4_body_len = sizeof(sample_ra_att_result_msg_t) + project_id_len;
+
+    ret = ecall_proc_ma(enclave_id, &status, s_msg4_body, s_msg4_body_len, s_p_ctxt, c_msg3_p_quote, c_msg3_p_quote_len, c_p_net_ctxt, sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, policy, attribute, attribute_len, iv1, mac1, c_msg4_body, c_msg4_body_len, project_id, project_id_len);
+
+    set_enclave(c_p_net_ctxt, enclave_id);
+    set_secret(c_p_net_ctxt, NULL, 0, NULL, 0);
+    sp_ra_proc_msg3_req(c_p_net_ctxt, c_msg3_final, c_msg3_full->size, (ra_samp_response_header_t **)pp_resp2, NULL, project_id, NULL, ias_crt, client_verify_ias, c_msg4_body);
+    free(project_id);
+    free(c_msg4_body);
+
+    return 0;
+}
+int get_mk_mr_list(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *sk_mr_list, size_t sk_mr_list_len, uint8_t *project_id, size_t project_id_len, uint8_t *mk_mr_list, size_t mk_mr_list_len, uint8_t *new_mk_mr_list, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv3, uint8_t *mac3, uint8_t *iv, uint8_t *mac)
+{
+    size_t sealed_sk_len = get_sealed_data_len(enclave_id, 0, SK_KEY_SIZE);
+    uint8_t *sealed_sk = (uint8_t *)malloc(sealed_sk_len);
+    //getting sealed sk from mk_sk
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_mk_len, mk_sk, SK_KEY_SIZE, iv1, mac1, sealed_sk, sealed_sk_len, project_id, project_id_len);
+    if (mk_mr_list == NULL)
+    {
+        size_t sealed_mr_list_len = get_sealed_data_len(enclave_id, 0, sk_mr_list_len);
+        uint8_t *sealed_mr_list = (uint8_t *)malloc(sealed_mr_list_len);
+        //getting sealed_list from sk_list
+        crypto_provision_kek(enclave_id, sealed_sk, sealed_sk_len, sk_mr_list, sk_mr_list_len, iv2, mac2, sealed_mr_list, sealed_mr_list_len, NULL, 0);
+        size_t new_mk_mr_list_len = get_encrypted_len(enclave_id, sealed_mr_list, sealed_mr_list_len);
+        //creating mk_list
+        crypto_transport_secret(enclave_id, sealed_mk, sealed_mk_len, sealed_mr_list, sealed_mr_list_len, new_mk_mr_list, new_mk_mr_list_len, iv, mac, sealed_sk, sealed_sk_len);
+    }
+    else
+    {
+        char *mr_list1 = (char *)malloc(sk_mr_list_len);
+        char *mr_list2 = (char *)malloc(mk_mr_list_len);
+        //getting list from sk_list
+        crypto_decrypt(enclave_id, sealed_sk, sealed_sk_len, mr_list1, sk_mr_list_len, sk_mr_list, iv2, mac2, NULL, 0);
+        //getting list from sk_list
+        crypto_decrypt(enclave_id, sealed_mk, sealed_mk_len, mr_list2, mk_mr_list_len, mk_mr_list, iv3, mac3, sealed_sk, sealed_sk_len);
+        if(memcmp(mr_list1, mr_list2, 32) == 0)
+        {
+            size_t sealed_mr_list_len = get_sealed_data_len(enclave_id, 0, sk_mr_list_len);
+            uint8_t *sealed_mr_list = (uint8_t *)malloc(sealed_mr_list_len);
+            //getting sealed_list from sk_list
+            crypto_provision_kek(enclave_id, sealed_sk, sealed_sk_len, sk_mr_list, sk_mr_list_len, iv2, mac2, sealed_mr_list, sealed_mr_list_len, NULL, 0);
+            size_t new_mk_mr_list_len = get_encrypted_len(enclave_id, sealed_mr_list, sealed_mr_list_len);
+            //creating mk_list
+            crypto_transport_secret(enclave_id, sealed_mk, sealed_mk_len, sealed_mr_list, sealed_mr_list_len, new_mk_mr_list, new_mk_mr_list_len, iv, mac, sealed_sk, sealed_sk_len);
+        }
+        else
+        {
+            fprintf(stdout,"Owner MR Enclave miss-match");
+            return -1;
+        }
+
+    }
+    return 0;
+}
+
+int get_sk_data(sgx_enclave_id_t enclave_id, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, uint8_t *mk_data, size_t mk_data_len, uint8_t *project_id, size_t project_id_len, uint8_t *sk_data, uint8_t *iv1, uint8_t *mac1, uint8_t *iv2, uint8_t *mac2, uint8_t *iv, uint8_t *mac)
+{
+    size_t sealed_sk_len = get_sealed_data_len(enclave_id, 0, SK_KEY_SIZE);
+    uint8_t *sealed_sk = (uint8_t *)malloc(sealed_sk_len);
+    //getting sealed_sk from mk_sk
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_mk_len, mk_sk, SK_KEY_SIZE, iv1, mac1, sealed_sk, sealed_sk_len, project_id, project_id_len);
+
+    size_t sealed_data_len = get_sealed_data_len(enclave_id, 0, mk_data_len);
+    uint8_t *sealed_data = (uint8_t *)malloc(sealed_data_len);
+    crypto_provision_kek(enclave_id, sealed_mk, sealed_mk_len, mk_data, mk_data_len, iv2, mac2, sealed_data, sealed_data_len, sealed_sk, sealed_sk_len);
+
+    size_t sk_data_len = get_encrypted_len(enclave_id, sealed_data, sealed_data_len);
+    crypto_transport_secret(enclave_id, sealed_sk, sealed_sk_len, sealed_data, sealed_data_len, sk_data, sk_data_len, iv, mac, NULL, 0);
+
+}
+
+int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_response_header_t* p_att_result_msg_full, uint8_t *sealed_secret, size_t sealed_len, uint8_t *sealed_secret2, size_t secret2_len)
 {
     int ret = 0;
     ra_samp_request_header_t *p_msg0_full = NULL;
@@ -526,25 +723,62 @@ int proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_msg3_
 
         // Get the shared secret sent by the server using SK (if attestation
         // passed)
-        if(attestation_passed && p_att_result_msg_body->secret.payload_size != 0)
+        //uint8_t *tmp_sealed_nonse;
+        /*if(attestation_passed && p_att_result_msg_body->secret.payload_size != 0)
         {
+            if (sealed_len == 0) {
+                //Extract sealed nonse in tmp variable for comparison
+                sealed_len = get_sealed_data_len(enclave_id, 0, 16);
+                tmp_sealed_nonse = (uint8_t*)malloc(sealed_len);
+                ret = client_put_secret_data(enclave_id,
+                                      &status,
+                                      context,
+                                      p_att_result_msg_body->secret.payload,
+                                      p_att_result_msg_body->secret.payload_size,
+                                      p_att_result_msg_body->secret.payload_tag,
+                                      tmp_sealed_nonse, sealed_len);
+                //Compare extracted sealed nonse with the one received as input
+                if (crypto_sealed_cmp(enclave_id, tmp_sealed_nonse, sealed_len, sealed_secret, sealed_len) != 0) {
+                    fprintf(stdout,"\nNonse Comparision failed\n");
+                    ret = -1;
+                    goto CLEANUP;
+                }
+            }
+            else {
+                //Extract sealed nonse to be sent back as output
+                ret = client_put_secret_data(enclave_id,
+                                      &status,
+                                      context,
+                                      p_att_result_msg_body->secret.payload,
+                                      p_att_result_msg_body->secret.payload_size,
+                                      p_att_result_msg_body->secret.payload_tag,
+                                      sealed_secret, sealed_len);
+            }
+            if((SGX_SUCCESS != ret)  || (SGX_SUCCESS != status)) {
+                fprintf(OUTPUT, "\nError in retrieving sealed nonse from msg4\n");
+                goto CLEANUP;
+            }
+        }*/
+        if(p_att_result_msg_body->data1.payload_size == 16) {
             ret = client_put_secret_data(enclave_id,
                                   &status,
                                   context,
-                                  p_att_result_msg_body->secret.payload,
-                                  p_att_result_msg_body->secret.payload_size,
-                                  p_att_result_msg_body->secret.payload_tag,
-                                  sealed_secret, sealed_len);
+                                  p_att_result_msg_body->data1.payload,
+                                  p_att_result_msg_body->data1.payload_size,
+                                  p_att_result_msg_body->data1.payload_tag,
+                                  sealed_secret2, secret2_len);
+
+
             if((SGX_SUCCESS != ret)  || (SGX_SUCCESS != status))
             {
-                fprintf(OUTPUT, "\nError, attestation result message secret "
+                fprintf(OUTPUT, "\nError in retrieving sealed session key.\nError, attestation result message secret "
                                 "using SK based AESGCM failed in [%s]. ret = "
                                 "0x%0x. status = 0x%0x", __FUNCTION__, ret,
                                  status);
                 goto CLEANUP;
             }
         }
-        fprintf(OUTPUT, "\nSecret successfully received from server.");
+        fprintf(OUTPUT, "\nSecret successfully received from server.\n");
 
 CLEANUP:
     return ret;
@@ -569,8 +803,7 @@ int get_project_id(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_sam
 	sample_ra_att_result_msg_t *p_att_result_msg_body = NULL;
 
 	p_att_result_msg_body =
-            (sample_ra_att_result_msg_t *)((uint8_t*)p_att_result_msg_full
-                                           + sizeof(ra_samp_response_header_t));
+            (sample_ra_att_result_msg_t *)p_att_result_msg_full->body;
 	proj_id_len = p_att_result_msg_body->project_id.payload_size;
 
 	ret = server_get_project_id(enclave_id,
@@ -704,7 +937,7 @@ int get_dh_key(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_ms
                                  status);
                 goto CLEANUP;
             }
-            fprintf(OUTPUT, "\nSecret successfully received from server.");
+            fprintf(OUTPUT, "\nSecret successfully received from server.\n");
             fprintf(OUTPUT, "\nRemote attestation success!\n");
         }
 

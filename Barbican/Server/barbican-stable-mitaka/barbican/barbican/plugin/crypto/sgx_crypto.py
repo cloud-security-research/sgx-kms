@@ -65,6 +65,8 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
         self.enclave_id = self.sgx.init_enclave(self.sgx.barbie_s)
         self.client_verify_ias = False
         self.server_verify_ias = False
+        self.sha2_server = None
+        self.s_pub_key, self.s_priv_key = self.sgx.generate_key_pair()
 
     def _get_master_kek(self):
         if self.sealed_kek:
@@ -79,9 +81,9 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
     def _get_sealed_data_len(self, plain_len):
         return self.sgx.barbie_c.get_sealed_data_len(self.enclave_id, 0, plain_len)
 
-    def do_attestation(self, data, external_project_id, enc_keys, is_mutual):
+    def do_attestation(self, data, external_project_id, enc_keys, is_mutual, policy_dict):
         if is_mutual:
-            return self._do_mutual_attestation(data, external_project_id, enc_keys)
+            return self._do_mutual_attestation(data, external_project_id, enc_keys, policy_dict)
         else:
             return self._do_attestation(data, external_project_id, enc_keys)
 
@@ -140,33 +142,22 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
             project_id, project_id_len = self.get_project_id(data['msg4'],
                                                              self.context[external_project_id])
             if self.sgx.convert_to_python_data(project_id) == external_project_id:
-                sealed_dh = self.get_dh_key(data['msg4'], self.context[external_project_id])
                 try:
-                    sealed_sk, sealed_mk = self._get_or_generate_enc_keys(project_id, enc_keys)
+                    sealed_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+                    sealed_mk, mk_sk, dh_sk = self.new_proc_ra(data['msg4'], self.context[external_project_id], sealed_mk, mk_sk)
                 except Exception as e:
                     LOG.error(e, exc_info=True)
                     response['status'] = 'Error in Remote Attestaion due to invalid input parameters'
                     return response, output
-                sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
-                dh_sk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id,
-                                           Secret(sealed_dh, sealed_len), sealed_sk, None)
                 response['session_key'] = dh_sk
                 response['status'] = 'OK'
                 output = {}
-                mk_sk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, sealed_mk, sealed_sk, project_id)
                 output['sk'] = mk_sk
                 output['mk'] = sealed_mk.value
                 sealed_kek = self._get_master_kek()
                 if sealed_kek:
                     kek_mk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, sealed_kek, sealed_mk, project_id)
                     output['mk'] = kek_mk
-                    if 'policy' in data.keys():
-                        output['policy'] = data['policy']
-                        if 'mr_e_list' in data.keys():
-                            mk_mr_e_list = self._process_mr_e_list(mk_sk, sealed_mk, data['mr_e_list'], external_project_id)
-                            output['mk_mr_e_list'] = mk_mr_e_list
-                        else:
-                            output['mr_signer'] = data['mr_signer']
                 return response, output
             else:
                 response['status'] = 'Error in Attestaion due to Project ID miss match'
@@ -175,7 +166,10 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
         else:
             msg0 = self.get_msg0(self.spid)
             response['msg0'] = msg0
-            ctxt, msg1 = self.get_msg1()
+            if "pub_key" in data:
+                ctxt, msg1 = self.get_msg1(data["pub_key"])
+            else:
+                ctxt, msg1 = self.get_msg1(None)
             response['msg1'] = msg1
             self.context[external_project_id] = ctxt
             return response, output
@@ -184,37 +178,46 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
         ret, msg0 = self.sgx.gen_msg0(self.sgx.barbie_s, spid)
         return msg0
 
-    def get_msg1(self):
-        return self.sgx.gen_msg1(self.sgx.barbie_s, self.enclave_id)
+    def get_msg1(self, pub_key):
+        return self.sgx.gen_msg1(self.sgx.barbie_s, self.enclave_id, pub_key)
 
-    def get_msg2(self, msg0, msg1, spid=None, client_verify_ias=False):
+    def get_msg2(self, msg0, msg1, priv_key=None, spid=None, client_verify_ias=False):
         ret, p_net_ctxt = self.sgx.proc_msg0(self.sgx.barbie_s, msg0, spid, client_verify_ias)
-        msg2 = self.sgx.proc_msg1_gen_msg2(self.sgx.barbie_s, msg1, p_net_ctxt)
+        msg2 = self.sgx.proc_msg1_gen_msg2(self.sgx.barbie_s, msg1, p_net_ctxt, priv_key)
         return p_net_ctxt, msg2
 
     def get_msg3(self, msg2, p_ctxt, ias_crt=None, client_verify_ias=False, server_verify_ias=True):
         return self.sgx.proc_msg2_gen_msg3(self.sgx.barbie_s, self.enclave_id,
                 msg2, p_ctxt, ias_crt, client_verify_ias, server_verify_ias)
 
-    def get_msg4(self, msg3, p_net_ctxt, sealed_sk, project_id=None, ias_crt=None, client_verify_ias=False):
+    def get_msg4(self, msg3, p_net_ctxt, sealed_sk, project_id=None, ias_crt=None, client_verify_ias=False, sealed_key2=None):
         return self.sgx.proc_msg3_gen_msg4(self.sgx.barbie_s, self.enclave_id,
-                msg3, p_net_ctxt, sealed_sk, project_id, ias_crt, client_verify_ias)
+                msg3, p_net_ctxt, sealed_sk, project_id, ias_crt, client_verify_ias, sealed_key2)
 
-    def proc_msg4(self, msg4, p_ctxt):
-        status, sk = self.sgx.proc_msg4(self.sgx.barbie_s, self.enclave_id,
-                msg4, p_ctxt)
-        return sk
+    def proc_msg4(self, msg4, p_ctxt, sha2_client, sha2_server):
+        status, sealed_secret1 = self.sgx.proc_msg4(self.sgx.barbie_s, self.enclave_id,
+                msg4, p_ctxt, sha2_client, sha2_server)
+        if status == -1:
+            return None
+        return sealed_secret1
+
+    def ma_proc_msg4(self, s_msg4, p_ctxt, c_msg3, p_net_ctxt, s_mk, mk_sk, policy_dict, ias_crt=None, client_verify_ias=False, project_id_len=0):
+        return self.sgx.ma_proc_msg4(self.sgx.barbie_s, self.enclave_id, s_msg4, p_ctxt, c_msg3, p_net_ctxt, s_mk, mk_sk, policy_dict, ias_crt, client_verify_ias, project_id_len)
 
     def get_dh_key(self, msg4, ctxt):
         status, sealed_dh = self.sgx.get_dh_key(self.sgx.barbie_s, self.enclave_id,
                 msg4, ctxt)
         return sealed_dh
 
+    def new_proc_ra(self, msg4, ctxt, sealed_mk, mk_sk):
+        return self.sgx.new_proc_ra(self.sgx.barbie_s, self.enclave_id,
+                    msg4, ctxt, sealed_mk, mk_sk)
+
     def get_project_id(self, msg4, p_ctxt):
-        project_id, project_id_len = self.sgx.get_project_id(self.sgx.barbie_s, self.enclave_id,msg4, p_ctxt)
+        project_id, project_id_len = self.sgx.get_project_id(self.sgx.barbie_s, self.enclave_id, msg4, p_ctxt)
         return project_id, project_id_len
 
-    def _do_mutual_attestation(self, data, external_project_id, enc_keys):
+    def _do_mutual_attestation(self, data, external_project_id, enc_keys, policy_dict):
         LOG.info("Call for Mutual Attestation")
 
         response = {}
@@ -229,6 +232,7 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
                     else:
                         c_p_net_ctxt, c_msg2 = self.get_msg2(data['c_msg0'],
                                                              data['c_msg1'],
+                                                             self.s_priv_key,
                                                              self.spid,
                                                              data['client_verify_ias'])
                         s_msg3, resp_crt, resp_sign, resp_body = self.get_msg3(data['s_msg2'],
@@ -240,6 +244,7 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
                             response['s_resp_body'] = resp_body
                         response['s_msg3'] = s_msg3
                         response['c_msg2'] = c_msg2
+                        self.sha2_server = self.sgx.get_report_sha256(self.sgx.barbie_s, s_msg3)
                         self.client_verify_ias = data['client_verify_ias']
                         self.server_verify_ias = data['server_verify_ias']
                         self.c_p_net_ctxt[external_project_id] = c_p_net_ctxt
@@ -248,6 +253,7 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
                 else:
                     c_p_net_ctxt, c_msg2 = self.get_msg2(data['c_msg0'],
                                                          data['c_msg1'],
+                                                         self.s_priv_key,
                                                          self.spid,
                                                          data['client_verify_ias'])
                     s_msg3, resp_crt, resp_sign, resp_body = self.get_msg3(data['s_msg2'],
@@ -284,40 +290,25 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
             project_id, project_id_len = self.get_project_id(data['s_msg4'],
                                                              self.s_p_ctxt[external_project_id])
             if self.sgx.convert_to_python_data(project_id) == external_project_id:
-                sk = self.proc_msg4(data['s_msg4'], self.s_p_ctxt[external_project_id])
-                try:
-                    sealed_sk, sealed_mk = self._get_or_generate_enc_keys(project_id, enc_keys)
-                except Exception as e:
-                    LOG.error(e, exc_info=True)
-                    response['status'] = 'Error in Mutual Attestaion due to invalid input parameters'
                 if not self.ias_enabled and self.client_verify_ias:
                     response['status'] = 'Server is not configured to do IAS verification'
                     return response, output
                 else:
                     try:
-                        c_msg4 = self.get_msg4(data['c_msg3'],
-                                        self.c_p_net_ctxt[external_project_id],
-                                        sealed_sk, None, self.ias_crt, self.client_verify_ias)
+                        sealed_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+                        sealed_mk, mk_sk, c_msg4 = self.ma_proc_msg4(data['s_msg4'], self.s_p_ctxt[external_project_id], data['c_msg3'],
+                                self.c_p_net_ctxt[external_project_id], sealed_mk, mk_sk, policy_dict, self.ias_crt, self.client_verify_ias, project_id_len)
                         response['c_msg4'] = c_msg4
                         response['status'] = 'OK'
                     except Exception as e:
                         LOG.error(e, exc_info=True)
-                        response['status'] = 'IAS verification failed'
+                        response['status'] = str(e)
                         return response, output
                 sealed_kek = self._get_master_kek()
                 output = {}
-                mk_sk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, sealed_mk, sealed_sk, project_id)
                 output['sk'] = mk_sk
                 kek_mk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, sealed_kek, sealed_mk, project_id)
                 output['mk'] = kek_mk
-                mr_e, mr_s = self.get_mr_enclave_signer(data['c_msg3'])
-                output['mr_signer'] = mr_s
-                output['mr_enclave'] = mr_e
-                if 'policy' in data.keys():
-                    output['policy'] = data['policy']
-                    if 'mr_e_list' in data.keys():
-                        mk_mr_e_list = self._process_mr_e_list(mk_sk, sealed_mk, data['mr_e_list'], external_project_id)
-                        output['mk_mr_e_list'] = mk_mr_e_list
 
                 return response, output
             else:
@@ -327,15 +318,20 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
         else:
             s_msg0 = self.get_msg0(self.spid)
             response['s_msg0'] = s_msg0
-            s_p_ctxt, s_msg1 = self.get_msg1()
+            if "pub_key" in data:
+                s_p_ctxt, s_msg1 = self.get_msg1(data["pub_key"])
+            else:
+                s_p_ctxt, s_msg1 = self.get_msg1(None)
+
             response['s_msg1'] = s_msg1
             self.s_p_ctxt[external_project_id] = s_p_ctxt
+            response['s_pub_key'] = self.s_pub_key
             response['status'] = 'OK'
             return response, output
 
-    def _get_or_generate_enc_keys(self, project_id=None, enc_keys=None):
-        sealed_sk = None
+    def _get_enc_keys(self, project_id=None, enc_keys=None):
         sealed_mk = None
+        mk_sk = None
         if enc_keys:
             LOG.info("Using already created session key")
             sealed_kek = self._get_master_kek()
@@ -345,57 +341,23 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
                 mk = enc_keys['mk']
             sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
             sealed_mk = Secret(mk, sealed_len)
-            sk = self.sgx.provision_kek(self.sgx.barbie_s, self.enclave_id, sealed_mk, enc_keys['sk'], project_id)
-            sealed_sk = Secret(sk, sealed_len)
-        else:
-            LOG.info("Generating new session key")
-            sealed_sk = self.sgx.generate_key(self.sgx.barbie_s, self.enclave_id, _SIXTEEN_BYTE_KEY)
-            sealed_mk = self.sgx.generate_key(self.sgx.barbie_s, self.enclave_id, _SIXTEEN_BYTE_KEY)
-        return sealed_sk, sealed_mk
-
-    def _process_mr_e_list(self, mk_sk, sealed_mk, mr_e_list, project_id = None):
-        separator = " "
-        sealed_kek = self._get_master_kek()
-        if not sealed_kek:
-            raise Exception("Master key is not provisioned. Please contact administrator.")
-        mk_mr_e_list = []
-        mr_e_list = mr_e_list.split(separator)
-        for mr_e in mr_e_list:
-            mk_mr_e_list.append(self.sgx.kek_encrypt(self.enclave_id, mk_sk, sealed_mk, mr_e, project_id))
-        mk_mr_e_list = separator.join(mk_mr_e_list)
-        return mk_mr_e_list
-
-    def get_mr_enclave_signer(self, msg_quote):
-        mr_e = self.sgx.get_mr_enclave(msg_quote)
-        mr_s = self.sgx.get_mr_signer(msg_quote)
-        return mr_e, mr_s
+            mk_sk = enc_keys['sk']
+        return sealed_mk, mk_sk
 
     def compare_buffer(self, buffer1, buffer2, length):
         return self.sgx.compare_secret(self.sgx.barbie_s, buffer1, buffer2, length)
 
-    def compare_mr_e_list(self, rec_mr_e, mk_mr_e_list, kek_mk, project_id):
-        sealed_kek = self._get_master_kek()
-        if not sealed_kek:
-            raise Exception("Master key is not provisioned. Please contact administrator.")
-        sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
-        mk = self.sgx.provision_kek(self.sgx.barbie_s, self.enclave_id, sealed_kek, kek_mk, project_id)
-        sealed_mk = Secret(mk, sealed_len)
-        for mk_mr_e in mk_mr_e_list:
-            mr_e = self.sgx.decrypt(self.sgx.barbie_s, self.enclave_id, sealed_mk, mk_mr_e)
-            b64_mr_e = base64.b64decode(mr_e)
-            if self.sgx.compare_secret(self.sgx.barbie_s, rec_mr_e, mr_e, 32):
-                return True
-
     def do_provision_kek(self, data, external_project_id, enc_keys):
         LOG.info("In KEK Provisioning")
-        sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
-        sealed_sk, sealed_mk = self._get_or_generate_enc_keys(external_project_id, enc_keys)
-        kek = self.sgx.provision_kek(self.sgx.barbie_s, self.enclave_id, sealed_sk, data['kek'], None)
-        self.sealed_kek = Secret(kek, sealed_len)
-        kek_mk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, self.sealed_kek, sealed_mk, external_project_id)
-        with open(self.kek_file, 'w') as f:
-            f.write(kek)
-        return {"status" : "Ok"}, {'sk' : enc_keys['sk'], 'mk' : kek_mk}
+        if self._get_master_kek() is None:
+            sealed_mk, mk_sk = self._get_enc_keys(external_project_id, enc_keys)
+            self.sealed_kek = self.sgx.get_kek(self.sgx.barbie_s, self.enclave_id, sealed_mk, mk_sk, data['kek'], external_project_id, len(external_project_id))
+            kek_mk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, self.sealed_kek, sealed_mk, external_project_id)
+            with open(self.kek_file, 'w') as f:
+                f.write(self.sealed_kek.value)
+            return {"status" : "OK"}, {'sk' : enc_keys['sk'], 'mk' : kek_mk}
+        else:
+            return {"status" : "Key Encryption Key already provisioned"}, None
 
     def encrypt(self, encrypt_dto, kek_meta_dto, project_id):
         project_id = unicodedata.normalize('NFKD', project_id).encode('ascii', 'ignore')
@@ -410,19 +372,8 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
                     unencrypted_type=type(unencrypted)
                 )
             )
-        sealed_kek = self._get_master_kek()
-        if not sealed_kek:
-            raise Exception("Master key is not provisioned. Please contact administrator.")
-        mk_secret = None
-        sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
-        mk = self.sgx.provision_kek(self.sgx.barbie_s, self.enclave_id, sealed_kek, enc_keys['mk'], project_id)
-        sealed_mk = Secret(mk, sealed_len)
-        if enc_keys['sk']:
-            LOG.info("Secret received in encrypted format")
-            mk_secret = self.sgx.kek_encrypt(self.enclave_id, enc_keys['sk'], sealed_mk, unencrypted, project_id)
-        else:
-            LOG.info("Secret received in plain format")
-            mk_secret = self.sgx.encrypt(self.sgx.barbie_s, self.enclave_id, sealed_mk, Secret(unencrypted, len(unencrypted)))
+        s_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+        mk_secret = self.sgx.secret_encrypt(self.sgx.barbie_s, self.enclave_id, s_mk, mk_sk, unencrypted, project_id, len(project_id))
 
         return c.ResponseDTO(mk_secret, None)
 
@@ -431,20 +382,18 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
         project_id = unicodedata.normalize('NFKD', project_id).encode('ascii', 'ignore')
         encrypted = encrypted_dto.encrypted
         enc_keys = encrypted_dto.enc_keys
-        sealed_kek = self._get_master_kek()
-        if not sealed_kek:
-            raise Exception("Master key is not provisioned. Please contact administrator.")
-        sk_secret = None
-        sealed_len = self._get_sealed_data_len(_SIXTEEN_BYTE_KEY)
-        mk = self.sgx.provision_kek(self.sgx.barbie_s, self.enclave_id, sealed_kek, enc_keys['mk'], project_id)
-        sealed_mk = Secret(mk, sealed_len)
-        if enc_keys['sk']:
-            sk_secret = self.sgx.kek_decrypt(self.enclave_id, enc_keys['sk'], sealed_mk, encrypted, project_id)
-        else:
-            sk_secret = self.sgx.decrypt(self.sgx.barbie_s, self.enclave_id, sealed_mk, encrypted)
-            sk_secret = base64.b64decode(sk_secret)
-        return sk_secret
+        s_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+        return self.sgx.secret_decrypt(self.sgx.barbie_s, self.enclave_id, s_mk, mk_sk, encrypted, project_id, len(project_id))
 
+    def mk_decrypt(self, enc_keys, mk_data, project_id):
+        sealed_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+        sk_data = self.sgx.get_sk_data(self.sgx.barbie_s, self.enclave_id, mk_sk, sealed_mk, mk_data, project_id, len(project_id))
+        return sk_data
+
+    def mk_encrypt(self, enc_keys, sk_data, project_id, mk_mr_list=None):
+        sealed_mk, mk_sk = self._get_enc_keys(project_id, enc_keys)
+        mk_data = self.sgx.get_mk_mr_list(self.sgx.barbie_s, self.enclave_id, mk_sk, sealed_mk, sk_data, project_id, len(project_id), mk_mr_list)
+        return mk_data
 
     def bind_kek_metadata(self, kek_meta_dto):
         kek_meta_dto.algorithm = 'aes'

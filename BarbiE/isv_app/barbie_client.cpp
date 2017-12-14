@@ -102,10 +102,10 @@ int crypto_legacy_encrypt(uint8_t *key, size_t key_len, char *plain_text, size_t
     return x;
 }
 
-int crypto_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_key, size_t sealed_key_len, char *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac)
+int crypto_decrypt(sgx_enclave_id_t enclave_id, uint8_t *sealed_key, size_t sealed_key_len, char *plain_text, size_t plain_text_len, uint8_t *cypher_text, uint8_t *iv, uint8_t *mac, uint8_t *project_id, size_t project_id_len)
 {
     sgx_status_t sgx_ret = SGX_SUCCESS, status = SGX_SUCCESS;
-    sgx_ret = ecall_decrypt(enclave_id, &status, sealed_key, sealed_key_len, (uint8_t *) plain_text, plain_text_len, cypher_text, iv, mac, NULL, 0);
+    sgx_ret = ecall_decrypt(enclave_id, &status, sealed_key, sealed_key_len, (uint8_t *) plain_text, plain_text_len, cypher_text, iv, mac, project_id, project_id_len);
     if (sgx_ret != SGX_SUCCESS) return sgx_ret;
     return status;
 }

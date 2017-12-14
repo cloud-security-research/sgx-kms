@@ -329,7 +329,7 @@ bool verifyQuote(uint8_t *quote, vector<pair<string, string> > *result, uint8_t 
             strcpy((char *)resp_crt, decode_crt(response_header.iasreport_signing_certificate));
             strcpy((char *)resp_body, ias_response_container.p_response);
         }
-        if (response_header.response_status == 201) {
+        if (response_header.response_status == 200) {
             string response(ias_response_container.p_response);
             *result = parseJSONfromIAS(response);
             return true;

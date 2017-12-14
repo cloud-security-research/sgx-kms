@@ -6,6 +6,9 @@ import sys
 
 from OpenSSL.crypto import load_publickey, load_certificate, X509, dump_publickey
 from OpenSSL.crypto import X509Store, verify, X509StoreContext, FILETYPE_PEM
+from Crypto.Cipher import AES
+from ecdsa import SigningKey, NIST256p, VerifyingKey
+import unicodedata
 
 class Secret:
 
@@ -66,6 +69,47 @@ class SGXInterface:
         except Exception as e:
             raise Exception("Error in initializing enclave!", e)
 
+    def generate_key_pair(self, key_dir):
+        pub_key_path = os.path.join(key_dir, "public_key.pem")
+        priv_key_path = os.path.join(key_dir, "private_key.pem")
+        if not os.path.exists(pub_key_path) and not os.path.exists(priv_key_path):
+            priv_key = SigningKey.generate(curve=NIST256p)
+            pub_key = priv_key.get_verifying_key()
+            open(priv_key_path, "w").write(priv_key.to_pem())
+            open(pub_key_path, "w").write(pub_key.to_pem())
+        else:
+            priv_key = SigningKey.from_pem(open(priv_key_path).read())
+            pub_key = VerifyingKey.from_pem(open(pub_key_path).read())
+
+        pk64 = pub_key.to_string()
+        pk_x, pk_y = pk64[:len(pk64)/2], pk64[len(pk64)/2:]
+
+        hex_priv_key = priv_key.to_string()
+        hex_sk = hex_priv_key.encode('hex')
+
+        pk_x = pk_x.encode('hex')
+        pk_y = pk_y.encode('hex')
+        hex_priv_key_out = [hex_sk[i:i + 2]for i in range(0, len(hex_sk), 2)]
+        pk_x_out = [pk_x[i:i + 2] for i in range(0,len(pk_x), 2)]
+        pk_y_out = [pk_y[i:i + 2] for i in range(0,len(pk_y), 2)]
+
+        pk_x_out.reverse()
+        pk_y_out.reverse()
+
+        pub_key = ""
+        for i in range(len(pk_x_out)):
+            pub_key = pub_key + pk_x_out[i]
+        for i in range(len(pk_y_out)):
+            pub_key = pub_key + pk_y_out[i]
+        hex_priv_key_out.reverse()
+        priv_key = ""
+        for i in range(len(hex_priv_key_out)):
+            priv_key = priv_key + hex_priv_key_out[i]
+
+        pub_key = base64.b64encode(pub_key + '\0')
+        priv_key = base64.b64encode(priv_key + '\0')
+        return pub_key , priv_key
+
     def get_crt(self, resp_crt=None):
         pattern = '-----END CERTIFICATE-----\n'
         crt = resp_crt.split(pattern)
@@ -123,21 +167,33 @@ class SGXInterface:
         except Exception as e:
             raise Exception("Error in processing msg0", e)
 
-    def gen_msg1(self, target_lib, enclave_id):
+    def gen_msg1(self, target_lib, enclave_id, pub_key):
         try:
+            if pub_key != None:
+                pub_key = base64.b64decode(pub_key)
+                key = self.ffi.new("char[]", pub_key)
+            else:
+                key = self.ffi.NULL
+
             p_ctxt = self.ffi.new("sgx_ra_context_t *")
             p_req1 = self.ffi.new("ra_samp_msg1_request_header_t **")
-            target_lib.gen_msg1(enclave_id, p_ctxt, p_req1)
+            target_lib.gen_msg1(enclave_id, p_ctxt, p_req1, key)
             msg1 = base64.b64encode(self.ffi.buffer(p_req1[0]))
             return p_ctxt[0], msg1
         except Exception as e:
             raise Exception("Error in generating msg1", e)
 
-    def proc_msg1_gen_msg2(self, target_lib, msg1, p_net_ctxt):
+    def proc_msg1_gen_msg2(self, target_lib, msg1, p_net_ctxt, priv_key):
         try:
+            if priv_key != None:
+                priv_key = base64.b64decode(priv_key)
+                key = self.ffi.new("char[]", priv_key)
+            else:
+                key = self.ffi.NULL
+
             msg1 = self.ffi.from_buffer(base64.b64decode(msg1))
             pp_resp1 = self.ffi.new("ra_samp_msg1_response_header_t **")
-            target_lib.proc_msg1(msg1, p_net_ctxt, pp_resp1)
+            target_lib.proc_msg1(msg1, p_net_ctxt, pp_resp1, key)
             msg2 = base64.b64encode(self.ffi.buffer(pp_resp1[0]))
             return msg2
         except Exception as e:
@@ -153,7 +209,7 @@ class SGXInterface:
             pp_req2 = self.ffi.new("ra_samp_msg3_request_header_t **")
             resp_crt = self.ffi.new("uint8_t[]", 4000)
             resp_sign = self.ffi.new("uint8_t[]", 500)
-            resp_body = self.ffi.new("uint8_t[]", 1000)
+            resp_body = self.ffi.new("uint8_t[]", 1200)
             if not server_verify_ias and not client_verify_ias:
                 server_verify_ias = True
             status = target_lib.gen_msg3(enclave_id, p_ctxt, msg2, pp_req2,
@@ -170,13 +226,18 @@ class SGXInterface:
         except Exception as e:
             raise Exception("Error in generating msg3", e)
 
-    def proc_msg3_gen_msg4(self, target_lib, enclave_id, msg3, p_net_ctxt,
-                           sealed_sk, project_id=None, ias_crt=None,
-                           client_verify_ias=False):
+    def proc_msg3_gen_msg4(self, target_lib, enclave_id, s_msg3, p_net_ctxt,
+                           sealed_sk, c_msg3, project_id=None, owner_mr_e=None,
+                           ias_crt=None, client_verify_ias=False):
         try:
             if ias_crt is None:
                 ias_crt = self.ffi.NULL
-            msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
+            if owner_mr_e is None:
+                owner_mr_e = self.ffi.NULL
+            else:
+                owner_mr_e = self.ffi.from_buffer(base64.b64decode(owner_mr_e))
+            s_msg3 = self.ffi.from_buffer(base64.b64decode(s_msg3))
+            c_msg3 = self.ffi.from_buffer(base64.b64decode(c_msg3))
             if sealed_sk is None:
                 sealed_len = 0
                 sealed_sk = self.ffi.NULL
@@ -190,14 +251,13 @@ class SGXInterface:
                 project_id_len = len(project_id)
             pp_resp2 = self.ffi.new("ra_samp_msg3_response_header_t **")
             target_lib.set_enclave(p_net_ctxt, enclave_id)
-            target_lib.set_secret(p_net_ctxt, sealed_sk, sealed_len)
-            status = target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2,
-                                          project_id, ias_crt,
-                                          client_verify_ias)
+            target_lib.set_secret(p_net_ctxt, sealed_sk, sealed_len, self.ffi.NULL, 0)
+            status = target_lib.proc_msg3(s_msg3, p_net_ctxt, pp_resp2, c_msg3,
+                                          project_id, owner_mr_e, ias_crt, client_verify_ias)
             #Initially using 177 length of msg4 but
             #after adding project id to msg4 using (209 + project id length) for msg4
             if status != 3:
-                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(209 + project_id_len)))
+                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(417 + project_id_len)))
             else:
                 raise Exception("IAS call failed")
             return msg4
@@ -205,11 +265,15 @@ class SGXInterface:
             raise Exception("Error in generating msg4", e)
 
     def legacy_proc_msg3_gen_msg4(self, target_lib, msg3, p_net_ctxt,
-                                  plain_sk, project_id=None, ias_crt=None,
+                                  project_id=None, owner_mr_e=None, ias_crt=None,
                                   client_verify_ias=False):
         try:
             if ias_crt is None:
                 ias_crt = self.ffi.NULL
+            if owner_mr_e is None:
+                owner_mr_e = self.ffi.NULL
+            else:
+                owner_mr_e = self.ffi.from_buffer(base64.b64decode(owner_mr_e))
             if project_id is None:
                 project_id_len = 0
                 project_id = self.ffi.NULL
@@ -217,30 +281,33 @@ class SGXInterface:
                 project_id_len = len(project_id)
             msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
             pp_resp2 = self.ffi.new("ra_samp_msg3_response_header_t **")
-            target_lib.set_secret(p_net_ctxt, plain_sk.value, plain_sk.length)
-            status = target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2,
-                                          project_id, ias_crt, client_verify_ias)
+            target_lib.set_secret(p_net_ctxt, self.ffi.NULL, 0, self.ffi.NULL, 0)
+            status = target_lib.proc_msg3(msg3, p_net_ctxt, pp_resp2, self.ffi.NULL,
+                                          project_id, owner_mr_e, ias_crt, client_verify_ias)
             #Initially using 177 length of msg4 but
             #after adding project id to msg4 using (209 + project id length) for msg4
             if status != 3:
-                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(209 + project_id_len)))
+                msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(417 + project_id_len)))
             else:
                 raise Exception("IAS call failed")
             return msg4
         except Exception as e:
             raise Exception("Error in generating msg4", e)
 
-    def proc_msg4(self, target_lib, enclave_id, msg4, p_ctxt):
+    def proc_msg4(self, target_lib, enclave_id, msg4, p_ctxt, sealed_nonse):
         try:
-            msg4 = self.ffi.from_buffer(base64.b64decode(msg4))
             plain_sk_len = 16
             sealed_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
-            sealed_sk = self.ffi.new("uint8_t[]", sealed_len)
-            status = target_lib.proc_ra(enclave_id, p_ctxt, msg4, sealed_sk,
-                                        self.ffi.cast("uint32_t", sealed_len))
-            sk_buf = base64.b64encode(self.ffi.buffer(sealed_sk))
+            sealed_nonse = self.ffi.from_buffer(base64.b64decode(sealed_nonse.value))
+            #Length is 0 as this will not be output variable
+            sealed_nonse_len = 0
+            msg4 = self.ffi.from_buffer(base64.b64decode(msg4))
+            sealed_secret2 = self.ffi.new("uint8_t[]", sealed_len)
+            status = target_lib.proc_ra(enclave_id, p_ctxt, msg4, sealed_nonse,
+                                        sealed_nonse_len, sealed_secret2, sealed_len)
+            secret2_buf = base64.b64encode(self.ffi.buffer(sealed_secret2))
             target_lib.close_ra(enclave_id, p_ctxt)
-            return status, sk_buf
+            return status, secret2_buf
         except Exception as e:
             raise Exception("Error in prcessing msg4 and retrieving sealed session key", e)
 
@@ -261,7 +328,7 @@ class SGXInterface:
     def get_project_id(self, target_lib, enclave_id, msg4, p_ctxt):
         try:
             msg4 = self.ffi.from_buffer(base64.b64decode(msg4))
-            proj_id_len = self.ffi.cast("uint32_t",0)
+            proj_id_len = self.ffi.cast("uint32_t", 0)
             proj_id_len = target_lib.get_project_id_len(enclave_id, p_ctxt, msg4)
             proj_id = self.ffi.new("uint8_t[]", proj_id_len)
             status = target_lib.get_project_id(enclave_id, p_ctxt, msg4, proj_id)
@@ -328,6 +395,20 @@ class SGXInterface:
         except Exception as e:
             raise Exception("ERROR: Encryption of the secret failed!", e)
 
+    def legacy_decrypt(self, plain_sk, enc_secret):
+        try:
+            b64_iv = 16
+            b64_mac = 24
+            iv = base64.b64decode(enc_secret[:b64_iv])
+            mac = base64.b64decode(enc_secret[b64_iv:(b64_iv + b64_mac)])
+            enc_secret = base64.b64decode(enc_secret[(b64_iv + b64_mac):])
+            cipher = AES.new(plain_sk, AES.MODE_GCM, iv)
+            dec_secret = cipher.decrypt(enc_secret)
+            #cipher.verify(mac)
+            return base64.b64encode(dec_secret)
+        except Exception as e:
+            raise Exception("ERROR: Legacy Decryption of the secret failed!", e)
+
     def encrypt(self, target_lib, enclave_id, sealed_sk, secret):
         try:
             iv = self.ffi.new("uint8_t[]", self.iv)
@@ -351,7 +432,7 @@ class SGXInterface:
             sealed_len = sealed_sk.length
             sealed_sk = self.ffi.from_buffer(base64.b64decode(sealed_sk.value))
             secret = self.ffi.new("uint8_t[]", length)
-            target_lib.crypto_decrypt(enclave_id, sealed_sk, sealed_len, secret, length, enc_secret, iv, mac)
+            target_lib.crypto_decrypt(enclave_id, sealed_sk, sealed_len, secret, length, enc_secret, iv, mac, self.ffi.NULL, 0)
             return base64.b64encode(self.ffi.buffer(secret))
         except Exception as e:
             raise Exception("ERROR: Decryption of the secret failed!", e)
@@ -436,6 +517,26 @@ class SGXInterface:
         except Exception as e:
             raise Exception("Error in comparing the secrets", e)
 
+    def compare_sealed_secret(self, target_lib, encalve_id, secret1, secret2):
+        try:
+            secret1 = self.ffi.from_buffer(base64.b64decode(secret1))
+            secret2 = self.ffi.from_buffer(base64.b64decode(secret2))
+            if target_lib.crypto_sealed_cmp(encalve_id, secret1, len(secret1), secret2, len(secret2)) == 0:
+                return True
+            return False
+        except Exception as e:
+            raise Exception("Error in comparing the sealed secrets", e)
+
+    def compare_sealed_secret(self, target_lib, enclave_id, secret1, secret2):
+        try:
+            secret1 = self.ffi.from_buffer(base64.b64decode(secret1))
+            secret2 = self.ffi.from_buffer(base64.b64decode(secret2))
+            if target_lib.crypto_sealed_cmp(enclave_id, secret1, len(secret1), secret2, len(secret2)) == 0:
+                return True
+            return False
+        except Exception as e:
+            raise Exception("Error in comparing the sealed secrets", e)
+
     def destroy_enclave(self, target_lib, enclave_id):
         try:
             target_lib.destroy_enclave(enclave_id)
@@ -482,6 +583,15 @@ class SGXInterface:
         except Exception as e:
             raise Exception("Error in retrieveing mr signer", e)
 
+    def get_report_sha256(self, target_lib, msg3):
+        try:
+            msg3 = self.ffi.from_buffer(base64.b64decode(msg3))
+            sha256 = self.ffi.new("uint8_t []", 32)
+            target_lib.get_report_sha256(msg3, sha256)
+            return base64.b64encode(self.ffi.buffer(sha256))
+        except Exception as e:
+            raise Exception("Error getting SHA256", e)
+
     def test_legacy_client(self):
         try:
 
@@ -508,8 +618,10 @@ class SGXInterface:
             self.destroy_enclave(self.barbie_s, enclave_id)
 
 
-    def test_sgx_client_wo_sgx_hw(self, spid=None, crt_path=None):
+    def test_sgx_client_wo_sgx_hw(self, spid=None, crt_path=None, kdir=None):
         try:
+
+            pub_key, priv_key = self.generate_key_pair(kdir)
             s_eid = self.init_enclave(self.barbie_s)
 
             plain_sk = Secret("", len(""))
@@ -517,17 +629,17 @@ class SGXInterface:
             #Perform attestation
             ret, msg0 = self.gen_msg0(self.barbie_s, spid)
 
-            p_ctxt, msg1 = self.gen_msg1(self.barbie_s, s_eid)
+            p_ctxt, msg1 = self.gen_msg1(self.barbie_s, s_eid, pub_key)
             print "gen_msg1 returned: " + msg1
 
             ret, p_net_ctxt = self.proc_msg0(self.barbie_c, msg0, spid, False)
-            msg2 = self.proc_msg1_gen_msg2(self.barbie_c, msg1, p_net_ctxt)
+            msg2 = self.proc_msg1_gen_msg2(self.barbie_c, msg1, p_net_ctxt, priv_key)
             print "send_msg1_recv_msg2 returned: " + msg2
 
             msg3, crt, sig, resp_body = self.proc_msg2_gen_msg3(self.barbie_s, s_eid, msg2, p_ctxt, crt_path, False)
             print "proc_msg2_gen_msg3 returned: " + msg3
 
-            msg4 = self.legacy_proc_msg3_gen_msg4(self.barbie_c, msg3, p_net_ctxt, plain_sk, "sgx_wo_hw", crt_path, False)
+            msg4 = self.legacy_proc_msg3_gen_msg4(self.barbie_c, msg3, p_net_ctxt, "sgx_wo_hw", None, crt_path, False)
             print "send_msg3_recv_msg4 returned: " + str(msg4)
 
             status, s_dh = self.get_dh_key(self.barbie_s, s_eid, msg4, p_ctxt)
@@ -575,86 +687,20 @@ class SGXInterface:
         finally:
             self.destroy_enclave(self.barbie_s, s_eid)
 
-    def test_sgx_client_with_sgx_hw(self, spid=None, crt_path=None):
-        c_eid = None
-        s_eid = None
-        try:
-            c_eid = self.init_enclave(self.barbie_c)
-            print "Client enclave ID : " + str(c_eid)
-            s_eid = self.init_enclave(self.barbie_s)
-            print "Server enclave ID : " + str(s_eid)
-
-            #Perform mutual attestation
-            ret, s_msg0 = self.gen_msg0(self.barbie_s, spid)
-            ret, c_msg0 = self.gen_msg0(self.barbie_c, spid)
-
-            s_p_ctxt, s_msg1 = self.gen_msg1(self.barbie_s, s_eid)
-            print "gen_msg1 returned: " + s_msg1
-            c_p_ctxt, c_msg1 = self.gen_msg1(self.barbie_c, c_eid)
-            print "gen_msg1 returned: " + c_msg1
-
-            ret, s_p_net_ctxt = self.proc_msg0(self.barbie_c, s_msg0, spid, True)
-            s_msg2 = self.proc_msg1_gen_msg2(self.barbie_c, s_msg1, s_p_net_ctxt)
-            print "send_msg1_recv_msg2 returned: " + s_msg2
-            ret, c_p_net_ctxt = self.proc_msg0(self.barbie_s, c_msg0, spid, True)
-            c_msg2 = self.proc_msg1_gen_msg2(self.barbie_s, c_msg1, c_p_net_ctxt)
-            print "send_msg1_recv_msg2 returned: " + c_msg2
-
-            s_msg3, s_crt, s_sig, s_resp_body = self.proc_msg2_gen_msg3(self.barbie_s, s_eid, s_msg2, s_p_ctxt, crt_path, True)
-            print "proc_msg2_gen_msg3 returned: " + s_msg3
-            c_msg3, c_crt, c_sig, c_resp_body = self.proc_msg2_gen_msg3(self.barbie_c, c_eid, c_msg2, c_p_ctxt, crt_path, True)
-            print "proc_msg2_gen_msg3 returned: " + c_msg3
-
-            s_msg4 = self.proc_msg3_gen_msg4(self.barbie_c, c_eid, s_msg3, s_p_net_ctxt, None, "sgx_with_hw", crt_path, True)
-            print "send_msg3_recv_msg4 returned: " + str(s_msg4)
-
-            project_id, project_id_size = self.get_project_id(self.barbie_s, s_eid, s_msg4, s_p_ctxt)
-            status, s_sk = self.proc_msg4(self.barbie_s, s_eid, s_msg4, s_p_ctxt)
-            #throw away this s_sk as the client is no longer sending in msg4
-            print "proc_ra returned: " + str(status)
-
-            s_mr_s = self.get_mr_signer(s_msg3)
-            print "MR Signer : " + str(s_mr_s)
-            s_mr_e = self.get_mr_enclave(s_msg3)
-            print "MR Enclave : " + str(s_mr_e)
-
-            mr_s = self.get_mr_signer(c_msg3)
-            print "MR Signer : " + str(mr_s)
-            mr_e = self.get_mr_enclave(c_msg3)
-            print "MR Enclave : " + str(mr_e)
-
-            print self.compare_secret(self.barbie_s, s_mr_s, mr_s, 32)
-            print self.compare_secret(self.barbie_s, s_mr_e, mr_e, 32)
-
-            s_sk = self.generate_key(self.barbie_s, s_eid, 16)
-            c_msg4 = self.proc_msg3_gen_msg4(self.barbie_s, s_eid, c_msg3, c_p_net_ctxt, s_sk, None, crt_path, True)
-            print "send_msg3_recv_msg4 returned: " + str(c_msg4)
-
-            status, c_sealed_sk = self.proc_msg4(self.barbie_c, c_eid, c_msg4, c_p_ctxt)
-            print "proc_ra returned: " + str(status)
-
-            print self.compare_secret(self.barbie_c, c_sealed_sk, s_sk.value, 16)
-
-        finally:
-            if c_eid:
-                self.destroy_enclave(self.barbie_c, c_eid)
-            if s_eid:
-                self.destroy_enclave(self.barbie_s, s_eid)
-
 if __name__ == "__main__":
     obj = SGXInterface()
     if len(sys.argv) < 3:
         print "please provide SPID and path of certificate"
         sys.exit()
+
+    key_dir = sys.argv[3]
+
     SPID = sys.argv[1]
     CRT_PATH = sys.argv[2]
     obj.init_env_variables()
     print "---------------------------------------SGX Aware Client Without SGX hardware(START)-------------------------------------------"
-    obj.test_sgx_client_wo_sgx_hw(SPID, CRT_PATH)
+    obj.test_sgx_client_wo_sgx_hw(SPID, CRT_PATH, key_dir)
     print "----------------------------------------SGX Aware Client Without SGX hardware(END)--------------------------------------------"
     print "--------------------------------------------------Legacy Client(START)--------------------------------------------------------"
     obj.test_legacy_client()
     print "---------------------------------------------------Legacy Client(END)---------------------------------------------------------"
-    print "---------------------------------------SGX Aware Client With SGX hardware(START)-------------------------------------------"
-    obj.test_sgx_client_with_sgx_hw(SPID, CRT_PATH)
-    print "----------------------------------------SGX Aware Client With SGX hardware(END)--------------------------------------------"
