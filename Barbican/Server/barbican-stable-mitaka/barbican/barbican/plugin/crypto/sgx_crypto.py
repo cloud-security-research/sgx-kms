@@ -347,17 +347,11 @@ class SGXCryptoPlugin(c.CryptoPluginBase):
     def compare_buffer(self, buffer1, buffer2, length):
         return self.sgx.compare_secret(self.sgx.barbie_s, buffer1, buffer2, length)
 
-    def do_provision_kek(self, data, external_project_id, enc_keys):
+    def do_provision_kek(self, external_project_id):
         LOG.info("In KEK Provisioning")
-        if self._get_master_kek() is None:
-            sealed_mk, mk_sk = self._get_enc_keys(external_project_id, enc_keys)
-            self.sealed_kek = self.sgx.get_kek(self.sgx.barbie_s, self.enclave_id, sealed_mk, mk_sk, data['kek'], external_project_id, len(external_project_id))
-            kek_mk = self.sgx.transport(self.sgx.barbie_s, self.enclave_id, self.sealed_kek, sealed_mk, external_project_id)
-            with open(self.kek_file, 'w') as f:
-                f.write(self.sealed_kek.value)
-            return {"status" : "OK"}, {'sk' : enc_keys['sk'], 'mk' : kek_mk}
-        else:
-            return {"status" : "Key Encryption Key already provisioned"}, None
+        with open(self.kek_file, 'r') as f:
+            kek = f.read()
+        return {"status" : "Ok", "kek" : kek}
 
     def encrypt(self, encrypt_dto, kek_meta_dto, project_id):
         project_id = unicodedata.normalize('NFKD', project_id).encode('ascii', 'ignore')

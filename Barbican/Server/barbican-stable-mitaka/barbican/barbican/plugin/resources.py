@@ -411,11 +411,11 @@ def do_attestation(data, external_project_id, is_mutual=False, context=None):
     store_plugin = plugin_manager.get_plugin_store(None)
     return store_plugin.do_attestation(data, external_project_id, is_mutual, context)
 
-def do_provision_kek(data, external_project_id):
+def do_provision_kek(external_project_id):
     plugin_manager = secret_store.get_manager()
     #This parameter can be None Just for custom sgx plugin
     store_plugin = plugin_manager.get_plugin_store(None)
-    return store_plugin.do_provision_kek(data, external_project_id)
+    return store_plugin.do_provision_kek(external_project_id)
 
 def update_policy(data, external_project_id):
     plugin_manager = secret_store.get_manager()

@@ -55,6 +55,7 @@ class SGXInterface:
         self.iv = 12
         self.mac = 16
         self.error_dict = {'0':'SP_OK', '1':'SP_UNSUPPORTED_EXTENDED_EPID_GROUP', '2':'SP_INTEGRITY_FAILED', '3':'SP_QUOTE_VERIFICATION_FAILED', '4':'SP_IAS_FAILED', '5':'SP_INTERNAL_ERROR', '6':'SP_PROTOCOL_ERROR', '7':'SP_QUOTE_VERSION_ERROR', '8':'SP_SPID_SET_ERROR'}
+        self.error_dict2 = {'0':'OK', '1':'Untrusted Enclave', '2':'Owner in Mr List provided does not match with the given owner', '3':'Enclave Identity verification failed', '4':'Error in retrieving sealed nonse from msg4', '5':'Policy not set for the project'}
 
     def init_env_variables(self):
         separator = "="
@@ -85,6 +86,17 @@ class SGXInterface:
                     if name.strip() == "IAS_CRT_PATH":
                         ias_crt =  value.strip()
                         return ias_crt
+
+    def get_master_ip(self):
+        separator = "="
+        master = None
+        with open("/opt/BarbiE/env.properties") as f:
+            for line in f:
+                if separator in line:
+                    name, value = line.split(separator)
+                    if name.strip() == "MASTER":
+                        master =  value.strip()
+                        return master
 
     def get_ias_enable(self):
         separator = "="
@@ -354,6 +366,7 @@ class SGXInterface:
             c_msg3 = self.ffi.from_buffer(base64.b64decode(c_msg3))
             pp_resp2 = self.ffi.new("ra_samp_msg3_response_header_t **")
             status = target_lib.ma_proc_ra(enclave_id, s_msg4, s_p_ctxt, c_msg3, c_p_net_ctxt, pp_resp2, sealed_mk, sealed_len, mk_sk, mk_sk_len, iv, mac, ias_crt, client_verify_ias, policy, attribute, attribute_len, iv1, mac1)
+            error = self.error_dict2[str(status)]
             if status == 0:
                 c_msg4 = base64.b64encode(self.ffi.buffer(pp_resp2[0],(417 + project_id_len)))
                 sealed_mk = base64.b64encode(self.ffi.buffer(sealed_mk))
@@ -361,7 +374,7 @@ class SGXInterface:
                 sealed_mk_len = target_lib.get_sealed_data_len(enclave_id, 0, plain_sk_len)
                 return Secret(sealed_mk, sealed_mk_len), mk_sk, c_msg4
             else:
-                raise Exception("Error getting sealed mk and mk_sk")
+                raise Exception("Error getting sealed mk and mk_sk due to ", error)
         except Exception as e:
             LOG.error("Error in ma_proc_msg4")
             raise e

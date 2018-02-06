@@ -279,14 +279,11 @@ class StoreCryptoAdapterPlugin(object):
 
         return response
 
-    def do_provision_kek(self, data, project_id):
+    def do_provision_kek(self, external_project_id):
         encrypting_plugin = manager.get_manager().get_plugin_store_generate(
             crypto.PluginSupportTypes.ENCRYPT_DECRYPT
         )
-        enc_keys = _get_enc_keys(project_id)
-        response, output =  encrypting_plugin.do_provision_kek(data, project_id, enc_keys)
-        if output:
-            _store_enc_keys(project_id, output['sk'], output['mk'])
+        response =  encrypting_plugin.do_provision_kek(external_project_id)
         return response
 
     def update_policy(self, data, project_id):

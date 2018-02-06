@@ -27,7 +27,7 @@
     "container_project_creator": "rule:creator and rule:container_project_match and rule:container_creator_user",
 
     "version:get": "@",
-    "kek:post": "rule:admin",
+    "kek:get": "rule:admin",
     "secret:decrypt": "rule:secret_decrypt_non_private_read or rule:secret_project_creator or rule:secret_project_admin or rule:secret_acl_read",
     "secret:get": "rule:secret_non_private_read or rule:secret_project_creator or rule:secret_project_admin or rule:secret_acl_read",
     "secret:put": "rule:admin_or_creator and rule:secret_project_match",

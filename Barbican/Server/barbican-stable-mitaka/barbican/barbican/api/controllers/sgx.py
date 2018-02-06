@@ -55,13 +55,12 @@ class ProvisionKEKController(controllers.ACLMixin):
     def index(self):
         pecan.abort(405)  # HTTP 405 Method Not Allowed as default
 
-    @index.when(method='POST', template='json')
+    @index.when(method='GET', template='json')
     @controllers.handle_exceptions(u._('Provision KEK'))
-    @controllers.enforce_rbac('kek:post')
+    @controllers.enforce_rbac('kek:get')
     @controllers.enforce_content_types(['application/json'])
-    def on_post(self, external_project_id):
-        data = api.load_body(pecan.request)
-        response = plugin.do_provision_kek(data, external_project_id)
+    def on_get(self, external_project_id):
+        response = plugin.do_provision_kek(external_project_id)
         return response
 
 class MutualAttestationController(controllers.ACLMixin):

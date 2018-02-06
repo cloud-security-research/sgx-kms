@@ -521,8 +521,7 @@ int new_proc_ra(sgx_enclave_id_t enclave_id, sgx_ra_context_t context, ra_samp_m
 
 int ma_proc_ra(sgx_enclave_id_t enclave_id, ra_samp_msg3_response_header_t* s_msg4, sgx_ra_context_t s_p_ctxt, ra_samp_msg3_request_header_t *c_msg3, void **c_p_net_ctxt, ra_samp_msg3_response_header_t **pp_resp2, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, uint8_t *ias_crt, bool client_verify_ias, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1)
 {
-    sgx_status_t status = SGX_SUCCESS;
-    int ret = 0;
+    int status = 0;
     sample_ra_att_result_msg_t *p_att_result_msg_body = NULL;
     uint8_t *mr_to_verify = NULL;
     size_t sealed_nonse_len = get_sealed_data_len(enclave_id, 0, SK_KEY_SIZE);
@@ -546,7 +545,12 @@ int ma_proc_ra(sgx_enclave_id_t enclave_id, ra_samp_msg3_response_header_t* s_ms
     s_msg4_body = (sample_ra_att_result_msg_t *)s_msg4->body;
     size_t s_msg4_body_len = sizeof(sample_ra_att_result_msg_t) + project_id_len;
 
-    ret = ecall_proc_ma(enclave_id, &status, s_msg4_body, s_msg4_body_len, s_p_ctxt, c_msg3_p_quote, c_msg3_p_quote_len, c_p_net_ctxt, sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, policy, attribute, attribute_len, iv1, mac1, c_msg4_body, c_msg4_body_len, project_id, project_id_len);
+    ecall_proc_ma(enclave_id, &status, s_msg4_body, s_msg4_body_len, s_p_ctxt, c_msg3_p_quote, c_msg3_p_quote_len, c_p_net_ctxt, sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, policy, attribute, attribute_len, iv1, mac1, c_msg4_body, c_msg4_body_len, project_id, project_id_len);
+    if(status != 0)
+    {
+        fprintf(stdout,"\nERROR: In ecall_proc_ma\n");
+        return status;
+    }
 
     set_enclave(c_p_net_ctxt, enclave_id);
     set_secret(c_p_net_ctxt, NULL, 0, NULL, 0);

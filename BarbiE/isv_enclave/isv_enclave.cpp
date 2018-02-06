@@ -581,7 +581,7 @@ uint8_t *ecall_sp_get_mr_s(sgx_quote_t *p_quote)
     return p_quote->report_body.mr_signer.m;
 }
 
-sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg4_body_len, sgx_ra_context_t s_p_ctxt, sgx_quote_t *c_msg3_p_quote, size_t c_msg3_p_quote_len, void **c_p_net_ctxt, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1, sample_ra_att_result_msg_t *c_msg4_body, size_t c_msg4_body_len, uint8_t *project_id, size_t project_id_len)
+int ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg4_body_len, sgx_ra_context_t s_p_ctxt, sgx_quote_t *c_msg3_p_quote, size_t c_msg3_p_quote_len, void **c_p_net_ctxt, uint8_t *sealed_mk, size_t sealed_mk_len, uint8_t *mk_sk, size_t mk_sk_len, uint8_t *iv, uint8_t *mac, int policy, uint8_t *attribute, size_t attribute_len, uint8_t *iv1, uint8_t *mac1, sample_ra_att_result_msg_t *c_msg4_body, size_t c_msg4_body_len, uint8_t *project_id, size_t project_id_len)
 {
     sgx_status_t ret = SGX_SUCCESS;
     sp_db_item_t *sp_db = NULL;
@@ -633,6 +633,11 @@ sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg
         }
         else
         {
+            if(policy == 0)
+            {
+                 printf("\nPolicy not set");
+                 return 5;
+            }
             ecall_provision_kek(sealed_mk, sealed_mk_len, mk_sk, mk_sk_len, iv, mac, sealed_sk, sealed_sk_len, project_id, project_id_len);
             printf( "\nUse existing keys");
             uint8_t *mr_list = (uint8_t *)malloc(attribute_len);
@@ -643,21 +648,21 @@ sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg
                 {
                     printf("\n******************* Untrusted Enclave **********\n");
                     free(mr_list);
-                    return SGX_ERROR_UNEXPECTED;
+                    return 1;
                 }
             }
             else
             {
                 printf("\n******************* Owner in Mr List provided does not match with the given owner **********\n");
                 free(mr_list);
-                return SGX_ERROR_UNEXPECTED;
+                return 2;
             }
         }
     }
     else
     {
         printf("\nEnclave Identity verification failed\n");
-        return SGX_ERROR_UNEXPECTED;
+        return 3;
     }
     ret = client_put_secret_data(s_p_ctxt,
                                  s_msg4_body->secret.payload,
@@ -667,6 +672,7 @@ sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg
 
     if(SGX_SUCCESS != ret) {
         printf("\nError in retrieving sealed nonse from msg4\n");
+        return 4;
     }
 
     sp_db = (sp_db_item_t *)*c_p_net_ctxt;
@@ -687,5 +693,5 @@ sgx_status_t ecall_proc_ma(sample_ra_att_result_msg_t *s_msg4_body, size_t s_msg
 	sealed_nonse = NULL;
     free(server_mr_e);
 	server_mr_e = NULL;
-    return ret;
+    return 0;
 }

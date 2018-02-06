@@ -19,19 +19,21 @@ pip install cffi
 
 mkdir /var/log/barbican/
 CWD=`pwd`
-barbican=$CWD"/Server/barbican-stable-mitaka"
-cd $barbican
-chmod +x install_barbican_with_nginx.sh
-./install_barbican_with_nginx.sh $1
-cd $CWD
 
+cd $CWD
 file="/usr/local/lib/python2.7/dist-packages/ecdsa-*"
 if [ -f $file ] ; then
    rm $file
 fi
+
 git clone https://github.com/warner/python-ecdsa.git
 cd $CWD/python-ecdsa
 python setup.py install
+
+barbican=$CWD"/Server/barbican-stable-mitaka"
+cd $barbican
+chmod +x install_barbican_with_nginx.sh
+./install_barbican_with_nginx.sh $1
 
 cd $CWD
 

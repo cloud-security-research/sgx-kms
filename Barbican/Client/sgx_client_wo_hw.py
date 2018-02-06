@@ -9,7 +9,6 @@ from sgx import Secret, SGXInterface
 proj_id = None
 attestation_url = None
 secret_url = None
-kek_url = None
 SK = None
 SGX = None
 key_dir = None
@@ -93,25 +92,6 @@ def retrieve_secret(ref):
     response, cookie = do_get(ref)
     return response
 
-def provision_kek(enc_kek, cookie):
-    data = {"kek" : enc_kek}
-    response, cookie = do_post(kek_url, data, cookie)
-    return response['status']
-
-def do_provision_kek(cookie):
-    print "***************************Performing KEK Provisioning*************************************"
-    plain_kek = raw_input("Enter the KEK to be provisioned for barbican(16 byte): ")
-    print "Step 0: Client created KEK: [" + plain_kek + "]"
-    kek = Secret(plain_kek, len(plain_kek))
-    print "Step 1: Encrypt the KEK with the shared symmetric key."
-    enc_kek = SGX.legacy_encrypt(SGX.barbie_c, SK, kek)
-    print "Step 2: Send the encrypted KEK to barbican"
-    status = provision_kek(enc_kek, cookie)
-    if status != "OK":
-        print "ERROR: " + status
-    else:
-        print "****************************Provisioning Completeted***************************************"
-
 def do_secret_mgmt():
     with open(proj_id + "_sk", "r") as f:
         SK = f.read()
@@ -154,13 +134,11 @@ def do_get(url, cookie=None):
 def main(args):
     global attestation_url
     global secret_url
-    global kek_url
     global SK
 
     ip = args['ip_address']
     attestation_url = 'https://' + ip + ':443/v2/attestation'
     secret_url = 'https://' + ip + ':443/v2/secrets'
-    kek_url = 'https://' + ip + ':443/v2/kek'
 
     SPID = args['spid']
     if args.get('client_verify_ias', False) and args.get('server_verify_ias', False):
@@ -184,19 +162,13 @@ def main(args):
 
     enclave_id = SGX.init_enclave(SGX.barbie_c)
 
-    is_admin = args.get('admin', None)
-    if is_admin:
-        cookie = do_attestation(SPID=SPID, IAS_CRT=IAS_CRT, client_verify_ias=client_verify_ias, server_verify_ias=server_verify_ias)
-        do_provision_kek(cookie)
-    else:
-        cookie = do_attestation(SPID=SPID, IAS_CRT=IAS_CRT, client_verify_ias=client_verify_ias, server_verify_ias=server_verify_ias)
-        do_secret_mgmt()
+    cookie = do_attestation(SPID=SPID, IAS_CRT=IAS_CRT, client_verify_ias=client_verify_ias, server_verify_ias=server_verify_ias)
+    do_secret_mgmt()
 
     SGX.destroy_enclave(SGX.barbie_c, enclave_id)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--admin', action='store_true', help='Run command as admin user for KEK provisioning')
     parser.add_argument('--client_verify_ias', action='store_true', help='If provided client will contact IAS to verify quote')
     parser.add_argument('--server_verify_ias', action='store_true', help='If provided server will contact IAS to verify quote')
     parser.add_argument('-ip', '--ip_address', help='Barbican Server IP. Defaults to localhost', default='127.0.0.1')

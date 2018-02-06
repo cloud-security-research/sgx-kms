@@ -29,6 +29,8 @@ During installation it will prompt for details for self signed SSL certificate g
 
 ### Pre-requisite
 
+* Note: Master KEK (that is used to encrypt Project wide KEKs) is now automatically generated inside SGX Barbican Enclave. Project wide KEKs are also generated inside SGX Barbican Enclave upon project creation. Hence, the step for KEK provisioning by admin is no longer required during initialization.
+
 * All properties are mandatory 
 
   *Required Properties are **BARBICAN_ENCLAVE_PATH**, **IAS_URL**, **IAS_CRT_PATH**, **IAS_SPID**, **IAS_ENABLED** for Barbican on different lines*
@@ -41,6 +43,7 @@ During installation it will prompt for details for self signed SSL certificate g
          IAS_SPID=76508EJNCLBLB8DS19AC35I5U7XDV828
          IAS_ENABLED=True/False
          KEY_PAIR_DIR=/path/to/dir
+	 MASTER=ip/of/master_node 	
 ```
 
 **IAS_ENABLED** : Enables/disables communication of server with IAS for quote verification and signing.
@@ -50,6 +53,8 @@ During installation it will prompt for details for self signed SSL certificate g
 **KEY_PAIR_DIR ** : Directory path to create server Intel(R) SGX remote attestation ECDSA key pair if not exists. Otherwise uses already available key pair with filenames public_key.pem and private_key.pem in the KEY_PAIR_DIR folder.
 
 **IAS_CRT_PATH ** : It contains the path of certificate file to interact with IAS. This file will contain both certificate and private key.
+
+**MASTER ** : Ip of master node in scaled barbican setup.
 
 ### Barbican service start/stop/restart
 
@@ -71,20 +76,6 @@ KDIR     : Directory path to store client public private key pair
 
 ## Sample Commands
 
-###  Provision Master key encryption key on Barbican
-
-```
-sudo python sgx_client_wo_hw.py -ip [<IP>] -p <proj_id> [--admin] -s [<SPID>] -crt [<IAS_CRT>] [--server_verify_ias] [--client_verify_ias] -kdir /dirpath/to/store/keypair
-```
-
-    IP      : IPv4 address of the server. Default :- localhost
-    proj_id : Project ID
-    client_verify_ias : Client will call IAS for quote verification.
-    server_verify_ias : Server will call IAS for quote verification.
-    SPID    : SPID provided by IAS in hexstring format. Required only when we are providing 'client_verify_ias'
-    IAS_CRT : Absolute path of certificate for IAS server. This file will contain both certificate and private key. Required only when we are providing 'client_verify_ias'
-    kdir    : Directory path to store client key pair
-
 ### SGX Aware client(without SGX Hardware) talking with Barbican Enclave 
 
 
@@ -105,22 +96,6 @@ False       | False             | False             | No IAS verification requir
 **server_verify_ias** flag is provided by client to let server do the quote verification with IAS.
 
 **client_verify_ias** flag is provided by client to let server know that client will verify quote with IAS.
-
-
-
-* #### Provision Master key in Barbican
-
-```
-sudo python sgx_client_wo_hw.py -ip [<IP>] -p <proj_id> [--admin] -s [<SPID>] -crt [<IAS_CRT>] [--server_verify_ias] [--client_verify_ias] -kdir /dirpath/to/store/keypair
-```
-
-    IP      : IPv4 address of the server.(Default - localhost)
-    proj_id : Project ID
-    client_verify_ias : Client will call IAS for quote verification.
-    server_verify_ias : Server will call IAS for quote verification.
-    SPID    : SPID provided by IAS in hex string format. Required only when we are providing 'client_verify_ias'
-    IAS_CRT : Absolute path of certificate for IAS server. This file will contain both certificate and private key. Required only when we are providing 'client_verify_ias'
-    kdir    : Directory path to store client key pair
 
 
 * #### Attestation and Secret management
