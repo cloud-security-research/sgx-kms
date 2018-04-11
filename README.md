@@ -208,28 +208,38 @@ sudo python project_policy_mgmt.py -ip [<IP>] -p <proj_id> -po [<policy>] -att [
 
 1. While testing clients with enclaves, get the MR_ENCLAVE value of you client enclave. If hex encoded, then convert the hex encoded mr_enclave value to base64 format
 
-**echo “hex encoded mr_enclave string” | xxd –r –p | base64**
+```
+echo “hex encoded mr_enclave string” | xxd –r –p | base64
+```
     
 This will print the base64 string of the mr_enclave. Copy it
 
-2.  Go inside /opt/barbiE/test_scripts folder. Execute the client enclave to test secret management on a fresh new project ID. Pass the base64 string of mr_enclave as the owner of the project.
+2. Go inside /opt/barbiE/test_scripts folder. Execute the client enclave to test secret management on a fresh new project ID. Pass the base64 string of mr_enclave as the owner of the project.
 
-**python sgx_client_with_hw.py -ip 127.0.0.1 -p <new_project_id> -s 89938EF55B8EB8501972C5C1B76DC8C8 -crt /opt/BarbiE/client.pem --server_verify_ias  -o_mr_e  <base64_string of the owner’s mrenclave>  -kdir ./**
+```
+python sgx_client_with_hw.py -ip 127.0.0.1 -p <new_project_id> -s 89938EF55B8EB8501972C5C1B76DC8C8 -crt /opt/BarbiE/client.pem --server_verify_ias  -o_mr_e  <base64_string of the owner’s mrenclave>  -kdir ./
+```
 
-3.     If you want give other enclaves access to the secrets of this project then create a file with any name and copy the base64 string of owner enclave as the first line and then base64 string of mr_enclave or mr_signer of other enclave who can access the secret. 
+3. If you want give other enclaves access to the secrets of this project then create a file with any name and copy the base64 string of owner enclave as the first line and then base64 string of mr_enclave or mr_signer of other enclave who can access the secret. 
 
 Example content of the file containing list of identities
 
-yy0Q5ER3pwI+r50fVLoS2AjkPKzzTYi5qMx555NcYIU= 
+```
+yy0Q5ER3pwI+r50fVLoS2AjkPKzzTYi5qMx555NcYIU=
 YCd60v38V+mA6Hbn+HisGQmIDqU4B5Wn6OqYsVeEH4U= 
+```
 
 4. Save the file and issue the policy management command to set the policy for third party mr_enclave verification
 
-**python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above>  -po 3 -att <file containing list of mr_enclave base64 values. First line should always be owner’s mr_enclave base64 value>**
+```
+python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above>  -po 3 -att <file containing list of mr_enclave base64 values. First line should always be owner’s mr_enclave base64 value>
+```
 
-5.  Or issue the policy management command to set the policy for third party mr_signer verification only.
+5. Or issue the policy management command to set the policy for third party mr_signer verification only.
 
-**python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above> -po 2 -att <file containing just the mr_signer base64 value in the second line. First line should be owner’s mr_enclave base64 value>**
+```
+python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above> -po 2 -att <file containing just the mr_signer base64 value in the second line. First line should be owner’s mr_enclave base64 value>
+```
  
 
 ```diff
