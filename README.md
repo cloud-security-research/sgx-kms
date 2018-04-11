@@ -1,21 +1,24 @@
 ## SGX Enabled OpenStack Barbican Key Management System
 
-This software is a research proof of concept and not intended for production use
+This software is a research proof of concept and not tested for production use
 
 ## Create Barbican Enclave Installer
 
+**IMPORTANT: This project is tested with Ubuntu version 16.04. Please make sure to have Intel(R) SGX SDK version 1.8 or 1.9 installed and tested before proceeding.
 
-**IMPORTANT: First generate and copy an Intel(R) SGX enclave signing/private key into BarbiE/isv_enclave/isv_enclave_private.pem
+** IMPORTANT: Please register with Intel(R) IAS service and obtain your own SPID. You will need the SPID, the self signed client certificate and private key for a successful deployment of the SGX Barbican Server.
+ 
+**IMPORTANT: Generate and copy an Intel(R) SGX enclave signing/private key into BarbiE/isv_enclave/isv_enclave_private.pem. optionally you can copy the isv_enclave_private.pem from SGX SDK sample programs.
 
-Go to intel-sgx/source/SGX-Barbican/
+**IMPORTANT: please install libjsoncpp-dev is not already installed
 
-Run
+Execute this
  
 ```
    sudo ./makeself_installer.sh
 ```
 
-It will create **BarbiE.bz2.run** binary
+This will build the Barbican Enclave and will also create **BarbiE.bz2.run** installer binary
 
 ## Barbican Enclave Installation
 
@@ -25,13 +28,27 @@ Execute "BarbiE.bz2.run" as root user on the machine where you want to setup Bar
     sudo ./BarbiE.bz2.run <ip_v4_address>
 ```
 
-During installation it will prompt for details for self signed SSL certificate generation.
+During installation it will prompt for details for self signed SSL certificate generation. For testing, press enter to skip entering details 
+
+**** during installation it will start the server temporarily and indicate some missing components. This is normal **** 
+
+
+## Startup the Server
+
+Once installation is successful, SGX Barbican server will be installed in /opt/BarbiE folder
+
+To test the installation, go inside /opt/BarbiE and execute
+
+```
+    sudo ./startup.sh restart
+```
+
 
 ### Pre-requisite
 
 * Note: Master KEK (that is used to encrypt Project wide KEKs) is now automatically generated inside SGX Barbican Enclave. Project wide KEKs are also generated inside SGX Barbican Enclave upon project creation. Hence, the step for KEK provisioning by admin is no longer required during initialization.
 
-* All properties are mandatory 
+* The file /opt/BarbiE/environment contains important parameters for the server. All parameters are mandatory 
 
   *Required Properties are **BARBICAN_ENCLAVE_PATH**, **IAS_URL**, **IAS_CRT_PATH**, **IAS_SPID**, **IAS_ENABLED** for Barbican on different lines*
 
@@ -41,7 +58,7 @@ During installation it will prompt for details for self signed SSL certificate g
          IAS_URL=https://test-as.sgx.trustedservices.intel.com:443/attestation/sgx/v1/report
          IAS_CRT_PATH=/root/client.pem
          IAS_SPID=76508EJNCLBLB8DS19AC35I5U7XDV828
-         IAS_ENABLED=True/False
+         IAS_ENABLED=True
          KEY_PAIR_DIR=/path/to/dir
 	 MASTER=ip/of/master_node 	
 ```
@@ -54,7 +71,7 @@ During installation it will prompt for details for self signed SSL certificate g
 
 **IAS_CRT_PATH ** : It contains the path of certificate file to interact with IAS. This file will contain both certificate and private key.
 
-**MASTER ** : Ip of master node in scaled barbican setup.
+**MASTER ** : Ip of master node in a scaled barbican cluster setup. Leave this field blank for a single server deplyment.
 
 ### Barbican service start/stop/restart
 
@@ -186,6 +203,35 @@ sudo python project_policy_mgmt.py -ip [<IP>] -p <proj_id> -po [<policy>] -att [
                 3 :- Mr Enclave of the Client is validated with a list of third party enclaves.
     attribute : Path of the file containing base64 encoded Mr Enclave or Mr Signer or list of Mr Enclave. First line of file will contain owner's Mr enclave.
     * **NOTE** owner is that enclave who created the project *
+
+* #### Example sequence of steps for secure key management
+
+1. While testing clients with enclaves, get the MR_ENCLAVE value of you client enclave. If hex encoded, then convert the hex encoded mr_enclave value to base64 format
+
+**echo “hex encoded mr_enclave string” | xxd –r –p | base64**
+    
+This will print the base64 string of the mr_enclave. Copy it
+
+2.  Go inside /opt/barbiE/test_scripts folder. Execute the client enclave to test secret management on a fresh new project ID. Pass the base64 string of mr_enclave as the owner of the project.
+
+**python sgx_client_with_hw.py -ip 127.0.0.1 -p <new_project_id> -s 89938EF55B8EB8501972C5C1B76DC8C8 -crt /opt/BarbiE/client.pem --server_verify_ias  -o_mr_e  <base64_string of the owner’s mrenclave>  -kdir ./**
+
+3.     If you want give other enclaves access to the secrets of this project then create a file with any name and copy the base64 string of owner enclave as the first line and then base64 string of mr_enclave or mr_signer of other enclave who can access the secret. 
+
+Example content of the file containing list of identities
+
+yy0Q5ER3pwI+r50fVLoS2AjkPKzzTYi5qMx555NcYIU= 
+YCd60v38V+mA6Hbn+HisGQmIDqU4B5Wn6OqYsVeEH4U= 
+
+4. Save the file and issue the policy management command to set the policy for third party mr_enclave verification
+
+**python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above>  -po 3 -att <file containing list of mr_enclave base64 values. First line should always be owner’s mr_enclave base64 value>**
+
+5.  Or issue the policy management command to set the policy for third party mr_signer verification only.
+
+**python project_policy_mgmt.py -ip 127.0.0.1 -p <same project id as above> -po 2 -att <file containing just the mr_signer base64 value in the second line. First line should be owner’s mr_enclave base64 value>**
+ 
+
 ```diff
 - The above test scripts are for standalone use of barbican. If barbican is configured with Keystone, the client scripts wont work.
 ```
